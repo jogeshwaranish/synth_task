@@ -1,0 +1,35 @@
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+
+# OAuth / API token caches (refresh tokens rotate here, outside git)
+.tokens/
+*.token.json
+*token_cache*
+
+# SQLite databases
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# Local training-data fixture: REAL personal data. Ships only if anonymized.
+# See DECISIONS.md (repo-privacy decision) before un-ignoring.
+tests/fixtures/*.xlsx
+Triathlon Training Sync.xlsx - *.csv
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
