@@ -119,15 +119,34 @@ def save_token(
         f.write(blob)
 
 
+def _try_legacy_plaintext(raw: bytes) -> TokenBundle | None:
+    # Pre-encryption code wrote the bundle as plaintext JSON. Encrypted blobs are
+    # random bytes that won't json-parse, so a successful parse with the expected
+    # field unambiguously identifies a legacy file to migrate.
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    if not isinstance(data, dict) or "access_token" not in data:
+        return None
+    return TokenBundle(**data)
+
+
 def load_token(
     path: str | Path, *, key_path: str | Path | None = None
 ) -> TokenBundle | None:
     path = Path(path)
     if not path.exists():
         return None  # checked before touching the key — never creates one here
+    raw = path.read_bytes()
+    legacy = _try_legacy_plaintext(raw)
+    if legacy is not None:
+        # Migrate a pre-encryption token in place: re-save it encrypted so the
+        # plaintext refresh token stops living on disk after the first load.
+        save_token(legacy, path, key_path=key_path)
+        return legacy
     key = crypto.load_or_create_key(key_path or _default_key_path(path))
-    plaintext = crypto.decrypt(path.read_bytes(), key)
-    return TokenBundle(**json.loads(plaintext))
+    return TokenBundle(**json.loads(crypto.decrypt(raw, key)))
 
 
 _AUTHORIZE_URL = "https://www.strava.com/oauth/authorize"
