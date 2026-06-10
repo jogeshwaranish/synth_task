@@ -10,7 +10,12 @@ into a prompt without delimiter wrapping, nor into SQL without parameterization.
 
 from __future__ import annotations
 
+import json
+import os
+import time
+from dataclasses import asdict, dataclass
 from datetime import datetime
+from pathlib import Path
 
 from schemas import Activity, Source, Sport
 
@@ -66,3 +71,37 @@ def to_activity(raw: dict, *, athlete_id: str) -> Activity:
 
 def _opt_float(v) -> float | None:
     return None if v is None else float(v)
+
+
+_EXPIRY_SKEW_SEC = 60
+
+
+@dataclass(frozen=True)
+class TokenBundle:
+    access_token: str
+    refresh_token: str
+    expires_at: int            # unix epoch seconds
+    scope: str
+    athlete_id: int | None = None
+
+
+def _is_expired(tb: TokenBundle) -> bool:
+    return tb.expires_at <= int(time.time()) + _EXPIRY_SKEW_SEC
+
+
+def save_token(tb: TokenBundle, path: str | Path) -> None:
+    # TODO(security): Anish — this refresh token is a long-lived secret; the
+    # at-rest encryption hook wraps this write. For now: 0600, outside git.
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump(asdict(tb), f)
+
+
+def load_token(path: str | Path) -> TokenBundle | None:
+    path = Path(path)
+    if not path.exists():
+        return None
+    with path.open() as f:
+        return TokenBundle(**json.load(f))

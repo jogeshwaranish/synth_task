@@ -1,0 +1,26 @@
+import time
+
+from ingest.strava import TokenBundle, load_token, save_token, _is_expired
+
+
+def test_token_roundtrips_to_disk_with_locked_permissions(tmp_path):
+    p = tmp_path / "tok.json"
+    tb = TokenBundle(
+        access_token="acc", refresh_token="ref",
+        expires_at=int(time.time()) + 3600, scope="activity:read_all",
+    )
+    save_token(tb, p)
+    assert load_token(p) == tb
+    # 0600 — owner-only, no group/other read of the refresh token.
+    assert (p.stat().st_mode & 0o777) == 0o600
+
+
+def test_expiry_uses_a_safety_skew():
+    soon = TokenBundle("a", "r", int(time.time()) + 30, "s")
+    fresh = TokenBundle("a", "r", int(time.time()) + 3600, "s")
+    assert _is_expired(soon) is True   # within the 60s skew
+    assert _is_expired(fresh) is False
+
+
+def test_load_missing_token_returns_none(tmp_path):
+    assert load_token(tmp_path / "nope.json") is None
