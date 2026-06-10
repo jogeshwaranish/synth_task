@@ -12,12 +12,20 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
+import webbrowser
 from dataclasses import asdict, dataclass
 from datetime import datetime
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, urlencode, urlparse
 
+import httpx
+
+from config import Settings
 from schemas import Activity, Source, Sport
+from store import db
 
 _M_PER_MILE = 1609.344
 _FT_PER_M = 3.280839895013123
@@ -105,3 +113,114 @@ def load_token(path: str | Path) -> TokenBundle | None:
         return None
     with path.open() as f:
         return TokenBundle(**json.load(f))
+
+
+_AUTHORIZE_URL = "https://www.strava.com/oauth/authorize"
+_TOKEN_URL = "https://www.strava.com/oauth/token"
+_API = "https://www.strava.com/api/v3"
+
+
+def _authorize_url(s: Settings) -> str:
+    q = urlencode({
+        "client_id": s.strava_client_id,
+        "response_type": "code",
+        "redirect_uri": s.redirect_uri,
+        "approval_prompt": "auto",
+        "scope": s.strava_scope,
+    })
+    return f"{_AUTHORIZE_URL}?{q}"
+
+
+class _CodeCatcher(BaseHTTPRequestHandler):
+    code: str | None = None
+
+    def do_GET(self):  # noqa: N802
+        qs = parse_qs(urlparse(self.path).query)
+        _CodeCatcher.code = (qs.get("code") or [None])[0]
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.end_headers()
+        ok = b"Strava authorized. You can close this tab and return to the CLI."
+        self.wfile.write(ok if _CodeCatcher.code else b"No code returned.")
+
+    def log_message(self, *_):  # silence access logging (avoid leaking the code)
+        return
+
+
+def _catch_redirect_code(port: int) -> str:
+    server = HTTPServer(("localhost", port), _CodeCatcher)
+    t = threading.Thread(target=server.handle_request)  # serve exactly one req
+    t.start()
+    t.join(timeout=300)
+    server.server_close()
+    if not _CodeCatcher.code:
+        raise RuntimeError("Did not receive an authorization code from Strava.")
+    return _CodeCatcher.code
+
+
+def _token_request(s: Settings, payload: dict) -> TokenBundle:
+    payload = {"client_id": s.strava_client_id,
+               "client_secret": s.strava_client_secret, **payload}
+    resp = httpx.post(_TOKEN_URL, data=payload, timeout=30)
+    resp.raise_for_status()  # 4xx/5xx surface status, never the secret payload
+    d = resp.json()
+    athlete = d.get("athlete") or {}
+    return TokenBundle(
+        access_token=d["access_token"],
+        refresh_token=d["refresh_token"],   # Strava ROTATES this — always persist
+        expires_at=int(d["expires_at"]),
+        scope=s.strava_scope,
+        athlete_id=athlete.get("id"),
+    )
+
+
+def authorize(s: Settings) -> TokenBundle:
+    if not s.strava_client_id or not s.strava_client_secret:
+        raise RuntimeError("Set STRAVA_CLIENT_ID and STRAVA_CLIENT_SECRET in .env")
+    url = _authorize_url(s)
+    print("Opening browser for Strava authorization...")
+    webbrowser.open(url)
+    print(f"If it didn't open, visit:\n  {url}")
+    code = _catch_redirect_code(s.strava_redirect_port)
+    tb = _token_request(s, {"code": code, "grant_type": "authorization_code"})
+    save_token(tb, s.strava_token_path)
+    return tb
+
+
+def load_or_refresh_token(s: Settings, *, force_refresh: bool = False) -> TokenBundle:
+    tb = load_token(s.strava_token_path)
+    if tb is None:
+        return authorize(s)
+    if force_refresh or _is_expired(tb):
+        tb = _token_request(
+            s, {"grant_type": "refresh_token", "refresh_token": tb.refresh_token}
+        )
+        save_token(tb, s.strava_token_path)  # persist the rotated refresh token
+    return tb
+
+
+def fetch_activities(s: Settings, tb: TokenBundle, *, per_page: int = 200) -> list[dict]:
+    headers = {"Authorization": f"Bearer {tb.access_token}"}
+    out: list[dict] = []
+    page = 1
+    with httpx.Client(timeout=60) as client:
+        while True:
+            r = client.get(
+                f"{_API}/athlete/activities",
+                headers=headers,
+                params={"per_page": per_page, "page": page},
+            )
+            r.raise_for_status()
+            batch = r.json()
+            if not batch:
+                break
+            out.extend(batch)
+            page += 1
+    return out
+
+
+def sync_strava(s: Settings, conn, *, force_refresh: bool = False) -> int:
+    tb = load_or_refresh_token(s, force_refresh=force_refresh)
+    raw = fetch_activities(s, tb)
+    activities = [to_activity(r, athlete_id=s.strava_athlete_id) for r in raw]
+    return db.upsert_activities(conn, activities)
