@@ -1,15 +1,23 @@
 """SQLite persistence. All values are bound via ? — never string-formatted.
 
-TODO(security): Anish — encryption-at-rest wrapper plugs in around connect().
-Owners: Basil (schema + queries).
+security(Anish): field-level encryption at rest. The UntrustedText / PII free-text
+columns (ENCRYPTED_COLUMNS) are AES-256-GCM encrypted via security/crypto.py
+before they hit disk and decrypted on read; numeric metrics stay plaintext so
+they remain queryable/indexable. Whole-file encryption (SQLCipher) was rejected
+because it needs a non-stdlib driver, contradicting the stdlib-sqlite3 decision
+(see DECISIONS.md). Pass `key=` to enable; the same per-machine key guards the
+token cache.
+Owners: Basil (schema + queries), Anish (encryption seam).
 """
 
 from __future__ import annotations
 
+import base64
 import sqlite3
 from pathlib import Path
 
 from schemas import Activity
+from security import crypto
 
 # Field order is the single source of truth for both the table and the binds.
 ACTIVITY_COLUMNS: tuple[str, ...] = (
@@ -20,6 +28,12 @@ ACTIVITY_COLUMNS: tuple[str, ...] = (
     "avg_cadence", "suffer_score", "calories", "perceived_exertion",
     "device_name",
 )
+
+# Externally-authored free text (UntrustedText in the contract) — the PII /
+# injection surface. Encrypted at rest when a key is supplied. Numeric metrics
+# are deliberately left plaintext so the agent's queries can still filter on them.
+ENCRYPTED_COLUMNS: tuple[str, ...] = ("name", "device_name")
+_ENC_PREFIX = "enc:v1:"  # marks an encrypted cell; lets decrypt pass plaintext through
 
 _ACTIVITY_DDL = """
 CREATE TABLE IF NOT EXISTS activity (
@@ -65,12 +79,32 @@ def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(_ACTIVITY_DDL)
 
 
-def _activity_to_row(a: Activity) -> tuple[object, ...]:
+def _encrypt_field(value: str | None, key: bytes) -> str | None:
+    if value is None:
+        return None
+    blob = crypto.encrypt(value.encode("utf-8"), key)
+    return _ENC_PREFIX + base64.b64encode(blob).decode("ascii")
+
+
+def _decrypt_field(value: str | None, key: bytes) -> str | None:
+    # Plaintext / pre-encryption rows pass straight through (no prefix).
+    if value is None or not value.startswith(_ENC_PREFIX):
+        return value
+    blob = base64.b64decode(value[len(_ENC_PREFIX):])
+    return crypto.decrypt(blob, key).decode("utf-8")
+
+
+def _activity_to_row(a: Activity, key: bytes | None) -> tuple[object, ...]:
     d = a.model_dump(mode="json")  # enums->str, datetimes/dates->iso str, bool->int 1/0 once in sqlite
+    if key is not None:
+        for c in ENCRYPTED_COLUMNS:
+            d[c] = _encrypt_field(d[c], key)
     return tuple(d[c] for c in ACTIVITY_COLUMNS)
 
 
-def upsert_activities(conn: sqlite3.Connection, activities: list[Activity]) -> int:
+def upsert_activities(
+    conn: sqlite3.Connection, activities: list[Activity], *, key: bytes | None = None
+) -> int:
     cols = ", ".join(ACTIVITY_COLUMNS)
     placeholders = ", ".join("?" for _ in ACTIVITY_COLUMNS)
     updates = ", ".join(
@@ -80,14 +114,14 @@ def upsert_activities(conn: sqlite3.Connection, activities: list[Activity]) -> i
         f"INSERT INTO activity ({cols}) VALUES ({placeholders}) "
         f"ON CONFLICT(activity_id) DO UPDATE SET {updates}"
     )
-    rows = [_activity_to_row(a) for a in activities]
-    with conn:  # TODO(security): all values parameterized; no f-string values
+    rows = [_activity_to_row(a, key) for a in activities]
+    with conn:  # security: all values parameterized; no f-string values
         conn.executemany(sql, rows)
     return len(rows)
 
 
 def get_activities(
-    conn: sqlite3.Connection, athlete_id: str | None = None
+    conn: sqlite3.Connection, athlete_id: str | None = None, *, key: bytes | None = None
 ) -> list[Activity]:
     if athlete_id is None:
         cur = conn.execute("SELECT * FROM activity ORDER BY start_local")
@@ -96,7 +130,14 @@ def get_activities(
             "SELECT * FROM activity WHERE athlete_id = ? ORDER BY start_local",
             (athlete_id,),
         )
-    return [Activity.model_validate(dict(r)) for r in cur.fetchall()]
+    out: list[Activity] = []
+    for r in cur.fetchall():
+        d = dict(r)
+        if key is not None:
+            for c in ENCRYPTED_COLUMNS:
+                d[c] = _decrypt_field(d[c], key)
+        out.append(Activity.model_validate(d))
+    return out
 
 
 def count_activities(conn: sqlite3.Connection) -> int:

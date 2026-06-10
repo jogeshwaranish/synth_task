@@ -848,9 +848,11 @@ Expected: browser opens to Strava consent → after "Authorize", the localhost t
 shows the success message → CLI prints `synced N Strava activities; db now holds N`.
 Verify:
 ```bash
-uv run python -c "from store import db; c=db.connect('synth.db'); db.init_db(c); \
+uv run python -c "from store import db; from security import crypto; \
+from config import get_settings; c=db.connect('synth.db'); db.init_db(c); \
+k=crypto.load_or_create_key(get_settings().encryption_key_path); \
 print(db.count_activities(c)); \
-print([(a.activity_id,a.sport.value,round(a.distance_mi,2)) for a in db.get_activities(c)[:5]])"
+print([(a.activity_id,a.sport.value,round(a.distance_mi,2)) for a in db.get_activities(c, key=k)[:5]])"
 ```
 Expected: a non-zero count and a few real activities with sane miles. Also confirm
 `.tokens/strava_token.json` exists and is **not** tracked by git (`git status`).

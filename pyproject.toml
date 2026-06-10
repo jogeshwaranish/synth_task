@@ -13,6 +13,7 @@ dependencies = [
     "openpyxl>=3.1",       # parse the local triathlon_sheet.xlsx fixture
     "anthropic>=0.40",     # synthesize/agent.py
     "jsonschema>=4.22",    # validate LLM output against insight_schema.json
+    "cryptography>=42.0",  # AES-256-GCM at-rest encryption for the token cache
 ]
 
 [project.optional-dependencies]
@@ -37,7 +38,7 @@ build-backend = "setuptools.build_meta"
 # synthesize/prompts.py), so top-level packages live at the repo root.
 [tool.setuptools]
 py-modules = ["schemas", "cli", "app", "config"]
-packages = ["ingest", "normalize", "store", "analyze", "synthesize"]
+packages = ["ingest", "normalize", "store", "analyze", "synthesize", "security"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
