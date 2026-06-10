@@ -74,3 +74,11 @@ def test_get_activities_filters_by_athlete(tmp_path):
     ])
     basil = db.get_activities(conn, athlete_id="basil")
     assert [a.activity_id for a in basil] == ["B1"]
+
+
+def test_count_activities(tmp_path):
+    conn = db.connect(tmp_path / "t.db")
+    db.init_db(conn)
+    assert db.count_activities(conn) == 0
+    db.upsert_activities(conn, [_sample_activity()])
+    assert db.count_activities(conn) == 1

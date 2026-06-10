@@ -97,3 +97,7 @@ def get_activities(
             (athlete_id,),
         )
     return [Activity.model_validate(dict(r)) for r in cur.fetchall()]
+
+
+def count_activities(conn: sqlite3.Connection) -> int:
+    return conn.execute("SELECT COUNT(*) FROM activity").fetchone()[0]
