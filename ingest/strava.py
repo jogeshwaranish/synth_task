@@ -244,4 +244,5 @@ def sync_strava(s: Settings, conn, *, force_refresh: bool = False) -> int:
     tb = load_or_refresh_token(s, force_refresh=force_refresh)
     raw = fetch_activities(s, tb)
     activities = [to_activity(r, athlete_id=s.strava_athlete_id) for r in raw]
-    return db.upsert_activities(conn, activities)
+    key = crypto.load_or_create_key(s.encryption_key_path)  # encrypt PII at rest
+    return db.upsert_activities(conn, activities, key=key)

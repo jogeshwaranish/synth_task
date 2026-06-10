@@ -45,8 +45,20 @@ no shared secret to manage. Threat model: this defends against the token leaking
 *off* the box (accidental commit, backup/sync of `.tokens/`, a copied repo); it
 does NOT defend against an attacker with full read access to the home dir, who
 gets key + ciphertext together. Raising that bar (OS keyring / passphrase) is a
-later swap behind the same `crypto.encrypt/decrypt` interface. The DB-field
-encryption seam in `store/db.py` will reuse these same primitives.
+later swap behind the same `crypto.encrypt/decrypt` interface.
+
+## DB at rest: field-level encryption of PII columns, not whole-file
+The `store/db.py` seam is filled with **field-level** AES-256-GCM encryption of
+the `UntrustedText` free-text columns (`name`, `device_name` — the PII /
+injection surface), reusing `security/crypto.py` and the same per-machine key.
+Whole-file encryption (SQLCipher) was rejected: it needs a non-stdlib driver
+(`pysqlcipher3`), which contradicts the stdlib-`sqlite3` decision above. Numeric
+metrics are left plaintext on purpose so the agent's tools can still filter and
+the `(athlete_id, local_date)` index stays useful. Encrypted cells carry an
+`enc:v1:` prefix over base64(nonce||ciphertext||tag); the prefix lets reads pass
+plaintext/legacy rows through untouched, so the column can be migrated in place.
+Encryption is keyed (`upsert_activities(..., key=)` / `get_activities(..., key=)`);
+`sync_strava` always supplies the key, so the live path is encrypted by default.
 
 ## Real-data fixture stays private
 `triathlon_sheet.xlsx` and the loose `*.csv` export are real personal training
