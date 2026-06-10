@@ -25,6 +25,7 @@ import httpx
 
 from config import Settings
 from schemas import Activity, Source, Sport
+from security import crypto
 from store import db
 
 _M_PER_MILE = 1609.344
@@ -97,22 +98,36 @@ def _is_expired(tb: TokenBundle) -> bool:
     return tb.expires_at <= int(time.time()) + _EXPIRY_SKEW_SEC
 
 
-def save_token(tb: TokenBundle, path: str | Path) -> None:
-    # TODO(security): Anish — this refresh token is a long-lived secret; the
-    # at-rest encryption hook wraps this write. For now: 0600, outside git.
+def _default_key_path(token_path: str | Path) -> Path:
+    # Keyfile lives beside the token cache, inside the gitignored .tokens/ dir.
+    return Path(token_path).parent / "synth.key"
+
+
+def save_token(
+    tb: TokenBundle, path: str | Path, *, key_path: str | Path | None = None
+) -> None:
+    # security(Anish): the refresh token is a long-lived, rotating secret. It is
+    # AES-256-GCM encrypted at rest via security/crypto.py with a per-machine,
+    # auto-generated key (never committed, never transported). 0600 on top, as
+    # defense in depth. See DECISIONS.md.
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    key = crypto.load_or_create_key(key_path or _default_key_path(path))
+    blob = crypto.encrypt(json.dumps(asdict(tb)).encode("utf-8"), key)
     fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as f:
-        json.dump(asdict(tb), f)
+    with os.fdopen(fd, "wb") as f:
+        f.write(blob)
 
 
-def load_token(path: str | Path) -> TokenBundle | None:
+def load_token(
+    path: str | Path, *, key_path: str | Path | None = None
+) -> TokenBundle | None:
     path = Path(path)
     if not path.exists():
-        return None
-    with path.open() as f:
-        return TokenBundle(**json.load(f))
+        return None  # checked before touching the key — never creates one here
+    key = crypto.load_or_create_key(key_path or _default_key_path(path))
+    plaintext = crypto.decrypt(path.read_bytes(), key)
+    return TokenBundle(**json.loads(plaintext))
 
 
 _AUTHORIZE_URL = "https://www.strava.com/oauth/authorize"

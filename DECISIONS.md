@@ -29,8 +29,24 @@ Strava rotates the refresh token on every refresh, so we always persist the
 returned token. It is a long-lived secret: stored outside git, owner-only
 permissions, written atomically via `os.open(..., 0o600)`. The OAuth redirect is
 caught by a one-shot localhost HTTP server that resets its captured-code state
-between runs and surfaces `?error=` denials explicitly. `# TODO(security)` marks
-where Anish's at-rest encryption wraps the token write.
+between runs and surfaces `?error=` denials explicitly.
+
+## Token encryption at rest: AES-256-GCM, per-machine auto-generated key
+The refresh token is now encrypted at rest (`security/crypto.py`), filling the
+`# TODO(security)` seam in `ingest/strava.py`. Cipher is **AES-256-GCM**
+(authenticated: a wrong key or any tampering fails loudly with `InvalidTag`,
+never silent garbage) — *not* a hash like SHA-256, which is one-way and can't be
+decrypted back into a usable token. A random 12-byte nonce is prepended per
+write. The 32-byte key is **auto-generated on first run** into
+`.tokens/synth.key` (0600, gitignored) and is **per-machine**: never committed,
+never transported between collaborators. That's the right model because the data
+it protects — the per-account token cache — is itself per-machine, so there is
+no shared secret to manage. Threat model: this defends against the token leaking
+*off* the box (accidental commit, backup/sync of `.tokens/`, a copied repo); it
+does NOT defend against an attacker with full read access to the home dir, who
+gets key + ciphertext together. Raising that bar (OS keyring / passphrase) is a
+later swap behind the same `crypto.encrypt/decrypt` interface. The DB-field
+encryption seam in `store/db.py` will reuse these same primitives.
 
 ## Real-data fixture stays private
 `triathlon_sheet.xlsx` and the loose `*.csv` export are real personal training

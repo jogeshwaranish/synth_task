@@ -993,6 +993,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "anthropic" },
+    { name = "cryptography" },
     { name = "fastapi" },
     { name = "httpx" },
     { name = "jsonschema" },
@@ -1015,6 +1016,7 @@ sheets = [
 [package.metadata]
 requires-dist = [
     { name = "anthropic", specifier = ">=0.40" },
+    { name = "cryptography", specifier = ">=42.0" },
     { name = "fastapi", specifier = ">=0.111" },
     { name = "google-api-python-client", marker = "extra == 'sheets'", specifier = ">=2.130" },
     { name = "google-auth", marker = "extra == 'sheets'", specifier = ">=2.30" },

@@ -45,6 +45,11 @@ class Settings(BaseSettings):
     def strava_token_path(self) -> Path:
         return self.synth_token_dir / "strava_token.json"
 
+    @property
+    def encryption_key_path(self) -> Path:
+        # Per-machine AES-256-GCM key, auto-generated 0600. Never committed.
+        return self.synth_token_dir / "synth.key"
+
     def safe_summary(self) -> dict[str, object]:
         """Redacted view safe to log. Secrets reduced to set/unset booleans."""
         return {
@@ -57,6 +62,7 @@ class Settings(BaseSettings):
             "google_sheet_id_set": bool(self.google_sheet_id),
             "db_path": str(self.synth_db_path),
             "token_dir": str(self.synth_token_dir),
+            "encryption_key_path": str(self.encryption_key_path),
         }
 
 

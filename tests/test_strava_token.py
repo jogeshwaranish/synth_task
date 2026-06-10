@@ -15,6 +15,22 @@ def test_token_roundtrips_to_disk_with_locked_permissions(tmp_path):
     assert (p.stat().st_mode & 0o777) == 0o600
 
 
+def test_token_is_encrypted_at_rest(tmp_path):
+    p = tmp_path / "tok.json"
+    tb = TokenBundle(
+        access_token="acc", refresh_token="SUPER_SECRET_REFRESH",
+        expires_at=int(time.time()) + 3600, scope="activity:read_all",
+    )
+    save_token(tb, p)
+    raw = p.read_bytes()
+    # The refresh token must NOT sit in cleartext on disk.
+    assert b"SUPER_SECRET_REFRESH" not in raw
+    assert b"access_token" not in raw          # not even the JSON keys leak
+    # ...but it round-trips back through the auto-created keyfile.
+    assert load_token(p) == tb
+    assert (tmp_path / "synth.key").exists()
+
+
 def test_expiry_uses_a_safety_skew():
     soon = TokenBundle("a", "r", int(time.time()) + 30, "s")
     fresh = TokenBundle("a", "r", int(time.time()) + 3600, "s")
