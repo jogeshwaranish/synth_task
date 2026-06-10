@@ -1,0 +1,219 @@
+{
+  "$defs": {
+    "Confidence": {
+      "enum": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "title": "Confidence",
+      "type": "string"
+    },
+    "Evidence": {
+      "additionalProperties": false,
+      "description": "One step of the agent's tool-call trace. Filled by harness, not the LLM.",
+      "properties": {
+        "step": {
+          "title": "Step",
+          "type": "integer"
+        },
+        "tool": {
+          "enum": [
+            "get_daily_metrics",
+            "get_activity_detail",
+            "compare_periods",
+            "query_anomalies"
+          ],
+          "title": "Tool",
+          "type": "string"
+        },
+        "args": {
+          "additionalProperties": true,
+          "title": "Args",
+          "type": "object"
+        },
+        "result_digest": {
+          "maxLength": 500,
+          "title": "Result Digest",
+          "type": "string"
+        }
+      },
+      "required": [
+        "step",
+        "tool",
+        "args",
+        "result_digest"
+      ],
+      "title": "Evidence",
+      "type": "object"
+    },
+    "Pattern": {
+      "additionalProperties": false,
+      "properties": {
+        "pattern_id": {
+          "title": "Pattern Id",
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 120,
+          "title": "Title",
+          "type": "string"
+        },
+        "description": {
+          "maxLength": 1200,
+          "title": "Description",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "trend",
+            "correlation",
+            "anomaly_explanation",
+            "observation"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "date_start": {
+          "format": "date",
+          "title": "Date Start",
+          "type": "string"
+        },
+        "date_end": {
+          "format": "date",
+          "title": "Date End",
+          "type": "string"
+        },
+        "metrics_involved": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Metrics Involved",
+          "type": "array"
+        },
+        "supporting_activity_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Supporting Activity Ids",
+          "type": "array"
+        },
+        "confidence": {
+          "$ref": "#/$defs/Confidence"
+        },
+        "caveats": {
+          "anyOf": [
+            {
+              "maxLength": 400,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Caveats"
+        }
+      },
+      "required": [
+        "pattern_id",
+        "title",
+        "description",
+        "kind",
+        "date_start",
+        "date_end",
+        "metrics_involved",
+        "confidence"
+      ],
+      "title": "Pattern",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "contract_version": {
+      "const": "1.0",
+      "default": "1.0",
+      "title": "Contract Version",
+      "type": "string"
+    },
+    "report_id": {
+      "title": "Report Id",
+      "type": "string"
+    },
+    "generated_at": {
+      "format": "date-time",
+      "title": "Generated At",
+      "type": "string"
+    },
+    "athlete_id": {
+      "title": "Athlete Id",
+      "type": "string"
+    },
+    "period_start": {
+      "format": "date",
+      "title": "Period Start",
+      "type": "string"
+    },
+    "period_end": {
+      "format": "date",
+      "title": "Period End",
+      "type": "string"
+    },
+    "data_coverage": {
+      "additionalProperties": true,
+      "description": "n_days, n_activities, n_wellness_days \u2014 filled by harness",
+      "title": "Data Coverage",
+      "type": "object"
+    },
+    "summary": {
+      "maxLength": 2000,
+      "title": "Summary",
+      "type": "string"
+    },
+    "patterns": {
+      "items": {
+        "$ref": "#/$defs/Pattern"
+      },
+      "maxItems": 10,
+      "title": "Patterns",
+      "type": "array"
+    },
+    "anomalies_reviewed": {
+      "description": "anomaly_ids the agent examined, addressed or dismissed",
+      "items": {
+        "type": "string"
+      },
+      "title": "Anomalies Reviewed",
+      "type": "array"
+    },
+    "open_questions": {
+      "description": "What more data would resolve, e.g. empty wellness tabs",
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 5,
+      "title": "Open Questions",
+      "type": "array"
+    },
+    "evidence": {
+      "description": "Tool-call trace \u2014 filled by harness, shown to AG",
+      "items": {
+        "$ref": "#/$defs/Evidence"
+      },
+      "title": "Evidence",
+      "type": "array"
+    }
+  },
+  "required": [
+    "report_id",
+    "generated_at",
+    "athlete_id",
+    "period_start",
+    "period_end",
+    "summary",
+    "patterns"
+  ],
+  "title": "SynthesisReport",
+  "type": "object"
+}
