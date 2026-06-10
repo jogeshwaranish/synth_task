@@ -31,6 +31,26 @@ def test_token_is_encrypted_at_rest(tmp_path):
     assert (tmp_path / "synth.key").exists()
 
 
+def test_legacy_plaintext_token_is_migrated_on_load(tmp_path):
+    import json
+    from dataclasses import asdict
+
+    p = tmp_path / "tok.json"
+    tb = TokenBundle(
+        access_token="acc", refresh_token="LEGACY_SECRET",
+        expires_at=int(time.time()) + 3600, scope="activity:read_all",
+        athlete_id=99,
+    )
+    # Simulate the OLD (pre-encryption) code path: plaintext JSON, no keyfile.
+    p.write_text(json.dumps(asdict(tb)))
+    assert b"LEGACY_SECRET" in p.read_bytes()     # precondition: plaintext on disk
+    # Loading returns the bundle AND transparently re-encrypts in place.
+    assert load_token(p) == tb
+    assert b"LEGACY_SECRET" not in p.read_bytes()  # migrated to ciphertext
+    assert (tmp_path / "synth.key").exists()
+    assert load_token(p) == tb                     # still readable after migration
+
+
 def test_expiry_uses_a_safety_skew():
     soon = TokenBundle("a", "r", int(time.time()) + 30, "s")
     fresh = TokenBundle("a", "r", int(time.time()) + 3600, "s")
