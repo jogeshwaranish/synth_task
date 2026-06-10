@@ -61,12 +61,12 @@ def connect(path: str | Path) -> sqlite3.Connection:
 
 
 def init_db(conn: sqlite3.Connection) -> None:
+    # executescript() issues an implicit COMMIT; do not call mid-transaction.
     conn.executescript(_ACTIVITY_DDL)
-    conn.commit()
 
 
-def _activity_to_row(a: Activity) -> tuple:
-    d = a.model_dump(mode="json")  # enums->str, datetimes/dates->iso, bool stays
+def _activity_to_row(a: Activity) -> tuple[object, ...]:
+    d = a.model_dump(mode="json")  # enums->str, datetimes/dates->iso str, bool->int 1/0 once in sqlite
     return tuple(d[c] for c in ACTIVITY_COLUMNS)
 
 

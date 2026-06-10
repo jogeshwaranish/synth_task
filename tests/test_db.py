@@ -44,3 +44,33 @@ def test_upsert_is_idempotent_on_activity_id(tmp_path):
     got = db.get_activities(conn)
     assert len(got) == 1
     assert got[0].name == "new"
+
+
+def test_is_trainer_true_roundtrips(tmp_path):
+    conn = db.connect(tmp_path / "t.db")
+    db.init_db(conn)
+    a = _sample_activity(is_trainer=True)
+    db.upsert_activities(conn, [a])
+    assert db.get_activities(conn)[0].is_trainer is True
+
+
+def test_all_optional_fields_none_roundtrips(tmp_path):
+    conn = db.connect(tmp_path / "t.db")
+    db.init_db(conn)
+    a = _sample_activity(
+        start_utc=None, elapsed_time_sec=None, elevation_gain_ft=None,
+        avg_speed_mph=None, avg_hr=None, max_hr=None, device_name=None,
+    )
+    db.upsert_activities(conn, [a])
+    assert db.get_activities(conn) == [a]
+
+
+def test_get_activities_filters_by_athlete(tmp_path):
+    conn = db.connect(tmp_path / "t.db")
+    db.init_db(conn)
+    db.upsert_activities(conn, [
+        _sample_activity(activity_id="B1", athlete_id="basil"),
+        _sample_activity(activity_id="A1", athlete_id="anish"),
+    ])
+    basil = db.get_activities(conn, athlete_id="basil")
+    assert [a.activity_id for a in basil] == ["B1"]
