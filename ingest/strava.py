@@ -133,10 +133,12 @@ def _authorize_url(s: Settings) -> str:
 
 class _CodeCatcher(BaseHTTPRequestHandler):
     code: str | None = None
+    error: str | None = None
 
     def do_GET(self):  # noqa: N802
         qs = parse_qs(urlparse(self.path).query)
         _CodeCatcher.code = (qs.get("code") or [None])[0]
+        _CodeCatcher.error = (qs.get("error") or [None])[0]
         self.send_response(200)
         self.send_header("Content-Type", "text/plain")
         self.end_headers()
@@ -148,11 +150,15 @@ class _CodeCatcher(BaseHTTPRequestHandler):
 
 
 def _catch_redirect_code(port: int) -> str:
+    _CodeCatcher.code = None        # reset so a stale code is never reused
+    _CodeCatcher.error = None
     server = HTTPServer(("localhost", port), _CodeCatcher)
-    t = threading.Thread(target=server.handle_request)  # serve exactly one req
+    t = threading.Thread(target=server.handle_request, daemon=True)  # one request
     t.start()
     t.join(timeout=300)
     server.server_close()
+    if _CodeCatcher.error:
+        raise RuntimeError(f"Strava authorization denied: {_CodeCatcher.error}")
     if not _CodeCatcher.code:
         raise RuntimeError("Did not receive an authorization code from Strava.")
     return _CodeCatcher.code
