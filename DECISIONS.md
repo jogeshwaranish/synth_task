@@ -60,6 +60,26 @@ plaintext/legacy rows through untouched, so the column can be migrated in place.
 Encryption is keyed (`upsert_activities(..., key=)` / `get_activities(..., key=)`);
 `sync_strava` always supplies the key, so the live path is encrypted by default.
 
+## Prompt-injection defense lives at the prompt boundary, not the parser
+The only attacker-controllable input is the manually-entered sheet (wellness
+`notes` is the contract's PRIMARY injection surface; Strava names/device too).
+The defense is NOT to sanitize at parse time — a real note can legitimately read
+"ignore the pain, pushed through", and stripping it would corrupt the analysis.
+Untrusted text is captured faithfully (encrypted at rest) and neutralized at the
+two LLM boundaries:
+- **`synthesize/prompts.wrap_untrusted()`** (seam #1) fences untrusted text with
+  a 128-bit per-call nonce (`<untrusted_data:nonce>…`), so a payload cannot forge
+  the closing tag and break out, plus a "this is data, not instructions" preamble.
+- **`synthesize/validate.validate_insight()`** (seam #2) validates LLM output
+  against `insight_schema.json` (jsonschema + FormatChecker, then pydantic) before
+  anything downstream uses it; invalid → reject + log, never propagate. Harness-
+  owned fields (`report_id`, `generated_at`, `data_coverage`, and especially the
+  `evidence` tool-call trace — "filled by harness, not the LLM") are stripped from
+  the model output and supplied authoritatively by the caller, so a steered model
+  cannot forge a trace or smuggle off-contract/extra keys through.
+Both are pure, tested primitives; Basil's `synthesize/` agent wires them in (wrap
+every `UntrustedText` into prompts; route every model response through validate).
+
 ## Real-data fixture stays private
 `triathlon_sheet.xlsx` and the loose `*.csv` export are real personal training
 data. They are gitignored. Before submission we either keep the repo PRIVATE or
