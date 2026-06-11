@@ -37,6 +37,10 @@ class Settings(BaseSettings):
     synth_db_path: Path = Path("synth.db")
     synth_token_dir: Path = Path(".tokens")
 
+    # --- Sheet ingest (AG's workbook or its per-tab CSV exports) ---
+    sheet_activities_path: Path | None = None
+    sheet_wellness_path: Path | None = None
+
     @property
     def redirect_uri(self) -> str:
         return f"http://localhost:{self.strava_redirect_port}/callback"
@@ -63,6 +67,14 @@ class Settings(BaseSettings):
             "db_path": str(self.synth_db_path),
             "token_dir": str(self.synth_token_dir),
             "encryption_key_path": str(self.encryption_key_path),
+            "sheet_activities_path": (
+                None if self.sheet_activities_path is None
+                else str(self.sheet_activities_path)
+            ),
+            "sheet_wellness_path": (
+                None if self.sheet_wellness_path is None
+                else str(self.sheet_wellness_path)
+            ),
         }
 
 
