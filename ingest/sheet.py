@@ -40,34 +40,26 @@ def _rows_from_csv(path: str | Path) -> list[Row]:
         return [_clean(r) for r in csv.DictReader(f)]
 
 
-def _rows_from_xlsx(path: str | Path, tab: str) -> list[Row]:
-    wb = load_workbook(path, data_only=True)
-    try:
-        ws = wb[tab]
-        rows_iter = ws.iter_rows(values_only=False)
-        header_row = next(rows_iter, None)
-        if header_row is None:
-            return []
-        keys = [None if h.value is None else str(h.value) for h in header_row]
+def _norm(v: object) -> object:
+    # openpyxl returns integral floats as int (3.0 -> 3); keep the "3.0" form
+    # so numeric cells always parse with float() downstream — never int().
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        return str(float(v))
+    return v
 
-        result = []
-        for raw in rows_iter:
-            if any(cell.value is not None for cell in raw):
-                row_dict = {}
-                for k, cell in zip(keys, raw):
-                    if k is None:
-                        continue
-                    v = cell.value
-                    if v is None:
-                        row_dict[str(k)] = None
-                    else:
-                        # Convert numeric types via float to preserve .0 for whole numbers
-                        # (openpyxl reads 3.0 as int 3; float(3) -> 3.0 -> "3.0")
-                        if isinstance(v, (int, float)) and not isinstance(v, bool):
-                            row_dict[str(k)] = str(float(v))
-                        else:
-                            row_dict[str(k)] = str(v)
-                result.append(_clean(row_dict))
-        return result
+
+def _rows_from_xlsx(path: str | Path, tab: str) -> list[Row]:
+    wb = load_workbook(path, data_only=True, read_only=True)
+    try:
+        rows_iter = wb[tab].iter_rows(values_only=True)
+        header = next(rows_iter, None)
+        if header is None:
+            return []
+        keys = [None if h is None else str(h) for h in header]
+        return [
+            _clean({k: _norm(v) for k, v in zip(keys, raw)})
+            for raw in rows_iter
+            if any(v is not None for v in raw)
+        ]
     finally:
         wb.close()
