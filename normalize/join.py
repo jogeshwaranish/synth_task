@@ -8,7 +8,8 @@ Contract join rules (CONTRACT.md / DECISIONS.md):
 - wellness-only days (rest days) still get a row — rest is signal
 
 Computed on demand, never materialized: at this scale recomputation is instant
-and there is no cache to invalidate on re-sync (see the 2026-06-10 design doc).
+and there is no cache to invalidate on re-sync
+(docs/superpowers/specs/2026-06-10-sheet-ingest-and-daily-join-design.md).
 """
 
 from __future__ import annotations
@@ -24,6 +25,8 @@ _SWIM_SPORTS = {Sport.SWIM}
 
 
 def _weighted_mean(pairs: list[tuple[float | None, float]]) -> float | None:
+    # w == 0 contributes no duration, so it cannot influence a duration-weighted
+    # mean — zero-second activities are excluded rather than dividing by zero.
     present = [(v, w) for v, w in pairs if v is not None and w > 0]
     if not present:
         return None
