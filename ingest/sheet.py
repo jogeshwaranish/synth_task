@@ -69,11 +69,11 @@ def _rows_from_xlsx(path: str | Path, tab: str) -> list[Row]:
         wb.close()
 
 
-def _f(v: str | None) -> float | None:
+def _opt_float(v: str | None) -> float | None:
     return None if v is None else float(v)
 
 
-def _bool(v: str | None) -> bool:
+def _parse_bool(v: str | None) -> bool:
     # csv export says TRUE/FALSE; xlsx bool cells stringify to True/False.
     return v is not None and v.upper() == "TRUE"
 
@@ -102,21 +102,21 @@ def parse_activity_rows(rows: list[Row], *, athlete_id: str = "ag") -> list[Acti
                 local_date=start_local.date(),
                 name=row.get("name") or "",
                 sport=Sport.normalize(row.get("sport_type") or "Other"),
-                is_trainer=_bool(row.get("trainer")),
+                is_trainer=_parse_bool(row.get("trainer")),
                 moving_time_sec=float(row.get("moving_time_sec") or 0),
-                elapsed_time_sec=_f(row.get("elapsed_time_sec")),
+                elapsed_time_sec=_opt_float(row.get("elapsed_time_sec")),
                 distance_mi=float(row.get("distance_mi") or 0),
-                elevation_gain_ft=_f(row.get("total_elevation_gain_ft")),
-                avg_speed_mph=_f(row.get("average_speed_mph")),
-                avg_hr=_f(row.get("average_heartrate")),
-                max_hr=_f(row.get("max_heartrate")),
-                avg_watts=_f(row.get("average_watts")),
-                weighted_watts=_f(row.get("weighted_average_watts")),
-                kilojoules=_f(row.get("kilojoules")),
-                avg_cadence=_f(row.get("average_cadence")),
-                suffer_score=_f(row.get("suffer_score")),
-                calories=_f(row.get("calories")),
-                perceived_exertion=_f(row.get("perceived_exertion")),
+                elevation_gain_ft=_opt_float(row.get("total_elevation_gain_ft")),
+                avg_speed_mph=_opt_float(row.get("average_speed_mph")),
+                avg_hr=_opt_float(row.get("average_heartrate")),
+                max_hr=_opt_float(row.get("max_heartrate")),
+                avg_watts=_opt_float(row.get("average_watts")),
+                weighted_watts=_opt_float(row.get("weighted_average_watts")),
+                kilojoules=_opt_float(row.get("kilojoules")),
+                avg_cadence=_opt_float(row.get("average_cadence")),
+                suffer_score=_opt_float(row.get("suffer_score")),
+                calories=_opt_float(row.get("calories")),
+                perceived_exertion=_opt_float(row.get("perceived_exertion")),
                 device_name=row.get("device_name"),
             ))
         except (KeyError, TypeError, ValueError, ValidationError) as e:

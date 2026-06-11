@@ -1,8 +1,12 @@
 """Tests for ingest/sheet.py — loaders and parsers (no network, synthetic fixtures only)."""
 
+from datetime import date, datetime, timezone
 from pathlib import Path
 
-from ingest.sheet import _rows_from_csv, _rows_from_xlsx
+import pytest
+
+from ingest.sheet import _rows_from_csv, _rows_from_xlsx, parse_activity_rows
+from schemas import Source, Sport
 
 FIXTURES = Path(__file__).parent / "fixtures"
 ACTIVITIES_CSV = FIXTURES / "sheet_activities_sample.csv"
@@ -42,14 +46,6 @@ def test_xlsx_loader_matches_csv_loader_shape(tmp_path):
         "name": "Morning Run",
     }
     assert rows[1]["distance_mi"] is None
-
-
-from datetime import date, datetime, timezone
-
-import pytest
-
-from ingest.sheet import parse_activity_rows
-from schemas import Source, Sport
 
 
 def test_parse_activities_full_mapping():
