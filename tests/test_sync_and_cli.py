@@ -15,13 +15,16 @@ from store import db
 from security import crypto
 
 
-def _settings(tmp_path) -> Settings:
-    return Settings(
+def _settings(tmp_path, **over) -> Settings:
+    defaults = dict(
         _env_file=None,
         synth_token_dir=tmp_path / "tokens",
         synth_db_path=tmp_path / "synth.db",
+        strava_client_id="cid",
         strava_client_secret="HUSH_CLIENT_SECRET",
     )
+    defaults.update(over)
+    return Settings(**defaults)
 
 
 def _raw(i: int, name: str) -> dict:
@@ -86,7 +89,7 @@ def test_cli_sync_prints_count_and_never_leaks_secrets(tmp_path, monkeypatch, ca
 
     assert cli.main(["sync"]) == 0
     out = capsys.readouterr().out
-    assert "synced 3 Strava activities" in out
+    assert "strava: synced 3 activities" in out
     assert seen_kwargs["force_refresh"] is False
     # safe_summary() only — the client secret must never reach stdout.
     assert "HUSH_CLIENT_SECRET" not in out
@@ -112,3 +115,38 @@ def test_cli_analyze_and_report_are_stubs_for_now(capsys):
     assert "follow-on plan" in capsys.readouterr().out
     assert cli.main(["report"]) == 0
     assert "follow-on plan" in capsys.readouterr().out
+
+
+def test_cli_sync_sheet_only_config_skips_strava(tmp_path, monkeypatch, capsys):
+    s = _settings(
+        tmp_path,
+        strava_client_id=None,
+        strava_client_secret=None,
+        sheet_activities_path=tmp_path / "acts.csv",
+    )
+    monkeypatch.setattr(cli, "get_settings", lambda: s)
+    monkeypatch.setattr(cli, "sync_sheet", lambda settings, conn: 8)
+
+    assert cli.main(["sync"]) == 0
+    out = capsys.readouterr().out
+    assert "strava: skipped" in out
+    assert "sheet: synced 8 activities" in out
+
+
+def test_cli_sync_strava_only_config_skips_sheet(tmp_path, monkeypatch, capsys):
+    s = _settings(tmp_path)  # has strava creds, no sheet path
+    monkeypatch.setattr(cli, "get_settings", lambda: s)
+    monkeypatch.setattr(cli, "sync_strava", lambda settings, conn, *, force_refresh=False: 3)
+
+    assert cli.main(["sync"]) == 0
+    out = capsys.readouterr().out
+    assert "strava: synced 3 activities" in out
+    assert "sheet: skipped" in out
+
+
+def test_cli_sync_with_nothing_configured_fails_clearly(tmp_path, monkeypatch, capsys):
+    s = _settings(tmp_path, strava_client_id=None, strava_client_secret=None)
+    monkeypatch.setattr(cli, "get_settings", lambda: s)
+
+    assert cli.main(["sync"]) == 1
+    assert "nothing to sync" in capsys.readouterr().out

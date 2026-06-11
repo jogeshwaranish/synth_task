@@ -6,6 +6,7 @@ import argparse
 import sys
 
 from config import get_settings
+from ingest.sheet import sync_sheet
 from ingest.strava import sync_strava
 from store import db
 
@@ -15,8 +16,23 @@ def _cmd_sync(args: argparse.Namespace) -> int:
     print("config:", s.safe_summary())  # redacted — never prints secrets
     conn = db.connect(s.synth_db_path)
     db.init_db(conn)
-    n = sync_strava(s, conn, force_refresh=args.refresh)
-    print(f"synced {n} Strava activities; db now holds {db.count_activities(conn)}")
+    synced_any = False
+    if s.strava_client_id and s.strava_client_secret:
+        n = sync_strava(s, conn, force_refresh=args.refresh)
+        print(f"strava: synced {n} activities")
+        synced_any = True
+    else:
+        print("strava: skipped (STRAVA_CLIENT_ID/STRAVA_CLIENT_SECRET not set)")
+    if s.sheet_activities_path is not None:
+        n = sync_sheet(s, conn)
+        print(f"sheet: synced {n} activities")
+        synced_any = True
+    else:
+        print("sheet: skipped (SHEET_ACTIVITIES_PATH not set)")
+    if not synced_any:
+        print("nothing to sync: set Strava creds and/or SHEET_ACTIVITIES_PATH in .env")
+        return 1
+    print(f"db now holds {db.count_activities(conn)} activities")
     return 0
 
 
