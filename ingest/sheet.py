@@ -91,13 +91,21 @@ def _utc_dt(v: str | None) -> datetime | None:
     return None if not v else datetime.fromisoformat(v.replace("Z", "+00:00"))
 
 
+def _fallback_activity_id(start_local: datetime, sport_raw: str | None) -> str:
+    # Real exports contain rows with no id (watch-app entries). Deterministic
+    # fallback keyed on wall-clock start + sport keeps upserts idempotent across
+    # re-syncs; a same-second same-sport collision would be a true duplicate.
+    return f"sheet-{start_local:%Y%m%dT%H%M%S}-{sport_raw or 'Other'}"
+
+
 def parse_activity_rows(rows: list[Row], *, athlete_id: str = "ag") -> list[Activity]:
     out: list[Activity] = []
     for row in rows:
         try:
             start_local = _local_dt(row["start_date_local"])
             out.append(Activity(
-                activity_id=row["activity_id"],
+                activity_id=row.get("activity_id")
+                or _fallback_activity_id(start_local, row.get("sport_type")),
                 source=Source.SHEET,
                 athlete_id=athlete_id,
                 start_local=start_local,

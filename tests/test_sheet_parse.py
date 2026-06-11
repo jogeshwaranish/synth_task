@@ -121,3 +121,14 @@ def test_parse_wellness_empty_input_is_normal_not_an_error():
 def test_malformed_wellness_row_raises_with_its_date():
     with pytest.raises(ValueError, match="2026-13-99"):
         parse_wellness_rows([{"local_date": "2026-13-99", "rhr": "47"}])
+
+
+def test_missing_activity_id_gets_deterministic_fallback():
+    # Real exports contain watch-app rows with no id but full activity data
+    # (~9% of the real file). They must ingest, not crash — with an id that is
+    # stable across re-syncs so upserts stay idempotent.
+    row = {"start_date_local": "2026-06-08 6:30:00", "name": "Watch Run",
+           "sport_type": "Run", "moving_time_sec": "1800"}
+    a1 = parse_activity_rows([row])[0]
+    a2 = parse_activity_rows([row])[0]
+    assert a1.activity_id == a2.activity_id == "sheet-20260608T063000-Run"
