@@ -16,7 +16,7 @@ import base64
 import sqlite3
 from pathlib import Path
 
-from schemas import Activity
+from schemas import Activity, WellnessDay
 from security import crypto
 
 # Field order is the single source of truth for both the table and the binds.
@@ -66,6 +66,34 @@ CREATE INDEX IF NOT EXISTS ix_activity_athlete_date
     ON activity (athlete_id, local_date);
 """
 
+# Wellness grain: one row per athlete per local_date (the join key). `notes` is
+# UntrustedText and the contract's PRIMARY prompt-injection surface — encrypted
+# at rest like the activity PII columns, via the same per-machine key.
+WELLNESS_COLUMNS: tuple[str, ...] = (
+    "athlete_id", "local_date",
+    "in_bed_hours", "asleep_hours", "snoring",
+    "rhr", "hrv", "body_weight_lb", "sauna_mins",
+    "notes",
+)
+
+ENCRYPTED_WELLNESS_COLUMNS: tuple[str, ...] = ("notes",)
+
+_WELLNESS_DDL = """
+CREATE TABLE IF NOT EXISTS wellness (
+    athlete_id      TEXT NOT NULL,
+    local_date      TEXT NOT NULL,
+    in_bed_hours    REAL,
+    asleep_hours    REAL,
+    snoring         REAL,
+    rhr             REAL,
+    hrv             REAL,
+    body_weight_lb  REAL,
+    sauna_mins      REAL,
+    notes           TEXT,
+    PRIMARY KEY (athlete_id, local_date)
+);
+"""
+
 
 def connect(path: str | Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(path))
@@ -76,7 +104,7 @@ def connect(path: str | Path) -> sqlite3.Connection:
 
 def init_db(conn: sqlite3.Connection) -> None:
     # executescript() issues an implicit COMMIT; do not call mid-transaction.
-    conn.executescript(_ACTIVITY_DDL)
+    conn.executescript(_ACTIVITY_DDL + _WELLNESS_DDL)
 
 
 def _encrypt_field(value: str | None, key: bytes) -> str | None:
@@ -142,3 +170,48 @@ def get_activities(
 
 def count_activities(conn: sqlite3.Connection) -> int:
     return conn.execute("SELECT COUNT(*) FROM activity").fetchone()[0]
+
+
+def upsert_wellness(
+    conn: sqlite3.Connection, days: list[WellnessDay], *, key: bytes | None = None
+) -> int:
+    cols = ", ".join(WELLNESS_COLUMNS)
+    placeholders = ", ".join("?" for _ in WELLNESS_COLUMNS)
+    updates = ", ".join(
+        f"{c}=excluded.{c}" for c in WELLNESS_COLUMNS
+        if c not in ("athlete_id", "local_date")
+    )
+    sql = (
+        f"INSERT INTO wellness ({cols}) VALUES ({placeholders}) "
+        f"ON CONFLICT(athlete_id, local_date) DO UPDATE SET {updates}"
+    )
+    rows = []
+    for w in days:
+        d = w.model_dump(mode="json")
+        if key is not None:
+            for c in ENCRYPTED_WELLNESS_COLUMNS:
+                d[c] = _encrypt_field(d[c], key)
+        rows.append(tuple(d[c] for c in WELLNESS_COLUMNS))
+    with conn:  # security: all values parameterized; no f-string values
+        conn.executemany(sql, rows)
+    return len(rows)
+
+
+def get_wellness(
+    conn: sqlite3.Connection, athlete_id: str | None = None, *, key: bytes | None = None
+) -> list[WellnessDay]:
+    if athlete_id is None:
+        cur = conn.execute("SELECT * FROM wellness ORDER BY local_date")
+    else:
+        cur = conn.execute(
+            "SELECT * FROM wellness WHERE athlete_id = ? ORDER BY local_date",
+            (athlete_id,),
+        )
+    out: list[WellnessDay] = []
+    for r in cur.fetchall():
+        d = dict(r)
+        if key is not None:
+            for c in ENCRYPTED_WELLNESS_COLUMNS:
+                d[c] = _decrypt_field(d[c], key)
+        out.append(WellnessDay.model_validate(d))
+    return out
