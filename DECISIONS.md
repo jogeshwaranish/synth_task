@@ -77,7 +77,10 @@ SQL over days. Wellness rows land in a `wellness` table with `notes` (the
 contract's primary injection surface) encrypted like the activity PII columns.
 Wellness column names are an assumption until AG populates the tab
 (CONTRACT.md open items 1–2). `synth sync` now syncs every *configured* source
-and skips unconfigured ones instead of crashing.
+and skips unconfigured ones instead of crashing. Export rows with no
+activity_id (real watch-app rows, 33/375 in the local file) get a
+deterministic `sheet-<start>-<sport>` fallback id so they ingest idempotently
+instead of failing the whole sync.
 
 ## Foundation commit for pre-existing contract/config files
 The plan assumed `schemas.py`, `CONTRACT.md`, `.gitignore`, `.env.example`,
