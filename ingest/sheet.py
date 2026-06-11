@@ -124,3 +124,27 @@ def parse_activity_rows(rows: list[Row], *, athlete_id: str = "ag") -> list[Acti
             # Loud failure with row identity — never skip rows silently.
             raise ValueError(f"bad sheet activity row {rid!r}: {e}") from e
     return out
+
+
+def parse_wellness_rows(rows: list[Row], *, athlete_id: str = "ag") -> list[WellnessDay]:
+    # Column names are a documented ASSUMPTION (CONTRACT.md open items 1-2):
+    # AG's wellness tabs are empty as of June 9; verify when rows arrive.
+    out: list[WellnessDay] = []
+    for row in rows:
+        try:
+            out.append(WellnessDay(
+                local_date=date.fromisoformat(row["local_date"]),
+                athlete_id=athlete_id,
+                in_bed_hours=_opt_float(row.get("in_bed_hours")),
+                asleep_hours=_opt_float(row.get("asleep_hours")),
+                snoring=_opt_float(row.get("snoring")),
+                rhr=_opt_float(row.get("rhr")),
+                hrv=_opt_float(row.get("hrv")),
+                body_weight_lb=_opt_float(row.get("body_weight_lb")),
+                sauna_mins=_opt_float(row.get("sauna_mins")),
+                notes=row.get("notes"),
+            ))
+        except (KeyError, TypeError, ValueError, ValidationError) as e:
+            rid = row.get("local_date") or "<missing local_date>"
+            raise ValueError(f"bad sheet wellness row {rid!r}: {e}") from e
+    return out

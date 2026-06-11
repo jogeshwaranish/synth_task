@@ -5,11 +5,12 @@ from pathlib import Path
 
 import pytest
 
-from ingest.sheet import _rows_from_csv, _rows_from_xlsx, parse_activity_rows
+from ingest.sheet import _rows_from_csv, _rows_from_xlsx, parse_activity_rows, parse_wellness_rows
 from schemas import Source, Sport
 
 FIXTURES = Path(__file__).parent / "fixtures"
 ACTIVITIES_CSV = FIXTURES / "sheet_activities_sample.csv"
+WELLNESS_CSV = FIXTURES / "sheet_wellness_sample.csv"
 
 
 def test_csv_loader_yields_dicts_with_blanks_as_none():
@@ -96,3 +97,27 @@ def test_malformed_activity_row_raises_with_its_id():
             "sport_type": "Run"}]
     with pytest.raises(ValueError, match="S9999"):
         parse_activity_rows(bad)
+
+
+def test_parse_wellness_full_mapping():
+    days = parse_wellness_rows(_rows_from_csv(WELLNESS_CSV))
+    assert len(days) == 3
+    d = days[0]
+    assert d.local_date == date(2026, 6, 1)
+    assert d.athlete_id == "ag"
+    assert d.in_bed_hours == 8.2 and d.asleep_hours == 7.4
+    assert d.snoring == 12 and d.rhr == 47 and d.hrv == 98
+    assert d.body_weight_lb == 151.2 and d.sauna_mins == 15
+    assert d.notes == "Slept well. Legs heavy after the ride."
+    # blanks -> None; injection-flavored note survives as plain DATA.
+    assert days[1].snoring is None and days[1].sauna_mins is None
+    assert "Ignore previous instructions" in days[1].notes
+
+
+def test_parse_wellness_empty_input_is_normal_not_an_error():
+    assert parse_wellness_rows([]) == []
+
+
+def test_malformed_wellness_row_raises_with_its_date():
+    with pytest.raises(ValueError, match="2026-13-99"):
+        parse_wellness_rows([{"local_date": "2026-13-99", "rhr": "47"}])
