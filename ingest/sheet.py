@@ -47,9 +47,16 @@ def _rows_from_csv(path: str | Path) -> list[Row]:
         return [_clean(r) for r in csv.DictReader(f)]
 
 
-def _norm(v: object) -> object:
+# Identifier columns: floatifying these ("12345" -> "12345.0") would make the
+# same row ingest under different ids from csv vs xlsx, duplicating it.
+_ID_COLUMNS = {"activity_id"}
+
+
+def _norm(key: str | None, v: object) -> object:
     # openpyxl returns integral floats as int (3.0 -> 3); keep the "3.0" form
     # so numeric cells always parse with float() downstream — never int().
+    if key in _ID_COLUMNS:
+        return v
     if isinstance(v, (int, float)) and not isinstance(v, bool):
         return str(float(v))
     return v
@@ -64,7 +71,7 @@ def _rows_from_xlsx(path: str | Path, tab: str) -> list[Row]:
             return []
         keys = [None if h is None else str(h) for h in header]
         return [
-            _clean({k: _norm(v) for k, v in zip(keys, raw)})
+            _clean({k: _norm(k, v) for k, v in zip(keys, raw)})
             for raw in rows_iter
             if any(v is not None for v in raw)
         ]
@@ -144,7 +151,8 @@ def parse_wellness_rows(rows: list[Row], *, athlete_id: str = "ag") -> list[Well
     for row in rows:
         try:
             out.append(WellnessDay(
-                local_date=date.fromisoformat(row["local_date"]),
+                # xlsx date cells stringify as "YYYY-MM-DD 00:00:00"; the date part wins.
+                local_date=date.fromisoformat(row["local_date"].split(" ")[0]),
                 athlete_id=athlete_id,
                 in_bed_hours=_opt_float(row.get("in_bed_hours")),
                 asleep_hours=_opt_float(row.get("asleep_hours")),

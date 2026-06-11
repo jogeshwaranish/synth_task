@@ -47,7 +47,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="synth")
     sub = p.add_subparsers(dest="command", required=True)
 
-    sync = sub.add_parser("sync", help="pull Strava (+ sheet, later) into SQLite")
+    sync = sub.add_parser("sync", help="pull configured sources (Strava, sheet) into SQLite")
     sync.add_argument("--refresh", action="store_true",
                       help="force a token refresh before syncing")
     sync.set_defaults(func=_cmd_sync)

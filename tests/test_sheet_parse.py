@@ -132,3 +132,25 @@ def test_missing_activity_id_gets_deterministic_fallback():
     a1 = parse_activity_rows([row])[0]
     a2 = parse_activity_rows([row])[0]
     assert a1.activity_id == a2.activity_id == "sheet-20260608T063000-Run"
+
+
+def test_xlsx_numeric_activity_id_is_not_floatified(tmp_path):
+    # An xlsx id cell holding a number must yield "12345", not "12345.0" —
+    # otherwise the same data ingested via csv and xlsx would duplicate rows.
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "activities_raw"
+    ws.append(["activity_id", "start_date_local", "name", "sport_type"])
+    ws.append([12345, "2026-06-08 6:30:00", "Run", "Run"])
+    p = tmp_path / "book.xlsx"
+    wb.save(p)
+    rows = _rows_from_xlsx(p, "activities_raw")
+    assert rows[0]["activity_id"] == "12345"
+
+
+def test_wellness_local_date_accepts_xlsx_datetime_form():
+    # openpyxl date cells stringify to "2026-06-01 00:00:00"; the date part wins.
+    days = parse_wellness_rows([{"local_date": "2026-06-01 00:00:00", "rhr": "47"}])
+    assert days[0].local_date == date(2026, 6, 1)
