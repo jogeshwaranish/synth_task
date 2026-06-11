@@ -21,6 +21,7 @@ from openpyxl import load_workbook
 from pydantic import ValidationError
 
 from config import Settings
+from ingest import mapping
 from schemas import Activity, Source, Sport, WellnessDay
 from security import crypto
 from store import db
@@ -175,6 +176,49 @@ def _load_rows(path: Path, tab: str) -> list[Row]:
     return _rows_from_csv(path)
 
 
+# security(Anish): wellness ingestion no longer hard-codes a tab/column layout —
+# real workbooks vary (this export keeps wellness in `daily_summary`, not the
+# empty `health_raw`). ingest/mapping.py infers the column mapping (LLM, cached)
+# and parses deterministically; notes stays the encrypted injection surface.
+def _tabs_preview(path: Path, *, n_samples: int = 3) -> dict[str, "mapping.TabPreview"]:
+    wb = load_workbook(path, data_only=True, read_only=True)
+    try:
+        out: dict[str, mapping.TabPreview] = {}
+        for name in wb.sheetnames:
+            rows_iter = wb[name].iter_rows(values_only=True)
+            header = next(rows_iter, None)
+            if header is None:
+                continue
+            keys = [None if h is None else str(h) for h in header]
+            headers = [k for k in keys if k is not None]
+            samples: list[Row] = []
+            for raw in rows_iter:
+                if not any(v is not None for v in raw):
+                    continue
+                samples.append(_clean({k: _norm(k, v) for k, v in zip(keys, raw)}))
+                if len(samples) >= n_samples:
+                    break
+            if not samples:
+                continue  # an empty tab (e.g. health_raw here) is not a usable source
+            out[name] = mapping.TabPreview(headers=headers, samples=samples)
+        return out
+    finally:
+        wb.close()
+
+
+def _ingest_wellness_mapped(path: Path, s: Settings, key: bytes) -> list[WellnessDay]:
+    if path.suffix.lower() in {".xlsx", ".xlsm"}:
+        tabs = _tabs_preview(path)
+        return mapping.ingest_wellness(
+            tabs, lambda tab: _rows_from_xlsx(path, tab), settings=s, key=key
+        )
+    # CSV has no tabs — treat the whole file as a single candidate sheet.
+    rows = _rows_from_csv(path)
+    headers = list(rows[0].keys()) if rows else []
+    tabs = {"__csv__": mapping.TabPreview(headers=headers, samples=rows[:3])}
+    return mapping.ingest_wellness(tabs, lambda _tab: rows, settings=s, key=key)
+
+
 def sync_sheet(s: Settings, conn) -> int:
     """Ingest the configured sheet export into the store. Returns activity count.
 
@@ -189,6 +233,6 @@ def sync_sheet(s: Settings, conn) -> int:
     )
     n = db.upsert_activities(conn, activities, key=key)
     if s.sheet_wellness_path is not None and Path(s.sheet_wellness_path).exists():
-        days = parse_wellness_rows(_load_rows(Path(s.sheet_wellness_path), _WELLNESS_TAB))
+        days = _ingest_wellness_mapped(Path(s.sheet_wellness_path), s, key)
         db.upsert_wellness(conn, days, key=key)
     return n
