@@ -20,7 +20,10 @@ from pathlib import Path
 from openpyxl import load_workbook
 from pydantic import ValidationError
 
+from config import Settings
 from schemas import Activity, Source, Sport, WellnessDay
+from security import crypto
+from store import db
 
 Row = dict[str, str | None]
 
@@ -148,3 +151,28 @@ def parse_wellness_rows(rows: list[Row], *, athlete_id: str = "ag") -> list[Well
             rid = row.get("local_date") or "<missing local_date>"
             raise ValueError(f"bad sheet wellness row {rid!r}: {e}") from e
     return out
+
+
+def _load_rows(path: Path, tab: str) -> list[Row]:
+    if path.suffix.lower() in {".xlsx", ".xlsm"}:
+        return _rows_from_xlsx(path, tab)
+    return _rows_from_csv(path)
+
+
+def sync_sheet(s: Settings, conn) -> int:
+    """Ingest the configured sheet export into the store. Returns activity count.
+
+    Activities path is required (caller checks configuration); wellness path is
+    optional and an absent/empty wellness source is the documented normal case.
+    """
+    if s.sheet_activities_path is None:
+        raise RuntimeError("Set SHEET_ACTIVITIES_PATH in .env")
+    key = crypto.load_or_create_key(s.encryption_key_path)  # encrypt PII at rest
+    activities = parse_activity_rows(
+        _load_rows(Path(s.sheet_activities_path), _ACTIVITIES_TAB)
+    )
+    n = db.upsert_activities(conn, activities, key=key)
+    if s.sheet_wellness_path is not None and Path(s.sheet_wellness_path).exists():
+        days = parse_wellness_rows(_load_rows(Path(s.sheet_wellness_path), _WELLNESS_TAB))
+        db.upsert_wellness(conn, days, key=key)
+    return n
