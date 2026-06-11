@@ -18,6 +18,9 @@
 # See DECISIONS.md (repo-privacy decision) before un-ignoring.
 tests/fixtures/*.xlsx
 Triathlon Training Sync.xlsx - *.csv
+# Any real workbook at the repo root (e.g. "Copy of Triathlon Training Sync.xlsx").
+*.xlsx
+*.xlsm
 
 # Python
 __pycache__/
