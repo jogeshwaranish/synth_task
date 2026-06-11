@@ -16,7 +16,7 @@ import base64
 import sqlite3
 from pathlib import Path
 
-from schemas import Activity, WellnessDay
+from schemas import Activity, BikeSplit, RunSplit, SwimSplit, WellnessDay
 from security import crypto
 
 # Field order is the single source of truth for both the table and the binds.
@@ -95,6 +95,66 @@ CREATE TABLE IF NOT EXISTS wellness (
 """
 
 
+# Per-activity split grain (agent drill-down, CONTRACT.md). PK (activity_id,
+# split_index). SwimSplit.stroke_style is UntrustedText -> encrypted at rest.
+RUN_SPLIT_COLUMNS: tuple[str, ...] = (
+    "activity_id", "split_index", "distance_mi", "moving_time_sec",
+    "pace_min_per_mi", "avg_hr", "max_hr", "avg_cadence_run",
+    "elevation_gain_ft", "is_partial",
+)
+BIKE_SPLIT_COLUMNS: tuple[str, ...] = (
+    "activity_id", "split_index", "duration_sec", "distance_mi", "avg_speed_mph",
+    "avg_hr", "avg_power", "avg_cadence", "elevation_gain_ft", "is_partial",
+)
+SWIM_SPLIT_COLUMNS: tuple[str, ...] = (
+    "activity_id", "split_index", "swim_context", "distance", "distance_unit",
+    "duration_sec", "pace_sec_per_100", "stroke_style", "swolf", "avg_hr",
+)
+ENCRYPTED_SWIM_SPLIT_COLUMNS: tuple[str, ...] = ("stroke_style",)
+
+_SPLITS_DDL = """
+CREATE TABLE IF NOT EXISTS run_split (
+    activity_id        TEXT NOT NULL,
+    split_index        INTEGER NOT NULL,
+    distance_mi        REAL NOT NULL,
+    moving_time_sec    REAL NOT NULL,
+    pace_min_per_mi    REAL,
+    avg_hr             REAL,
+    max_hr             REAL,
+    avg_cadence_run    REAL,
+    elevation_gain_ft  REAL,
+    is_partial         INTEGER NOT NULL,
+    PRIMARY KEY (activity_id, split_index)
+);
+CREATE TABLE IF NOT EXISTS bike_split (
+    activity_id        TEXT NOT NULL,
+    split_index        INTEGER NOT NULL,
+    duration_sec       REAL NOT NULL,
+    distance_mi        REAL NOT NULL,
+    avg_speed_mph      REAL,
+    avg_hr             REAL,
+    avg_power          REAL,
+    avg_cadence        REAL,
+    elevation_gain_ft  REAL,
+    is_partial         INTEGER NOT NULL,
+    PRIMARY KEY (activity_id, split_index)
+);
+CREATE TABLE IF NOT EXISTS swim_split (
+    activity_id        TEXT NOT NULL,
+    split_index        INTEGER NOT NULL,
+    swim_context       TEXT,
+    distance           REAL NOT NULL,
+    distance_unit      TEXT NOT NULL,
+    duration_sec       REAL NOT NULL,
+    pace_sec_per_100   REAL,
+    stroke_style       TEXT,
+    swolf              REAL,
+    avg_hr             REAL,
+    PRIMARY KEY (activity_id, split_index)
+);
+"""
+
+
 def connect(path: str | Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(path))
     conn.row_factory = sqlite3.Row
@@ -104,7 +164,7 @@ def connect(path: str | Path) -> sqlite3.Connection:
 
 def init_db(conn: sqlite3.Connection) -> None:
     # executescript() issues an implicit COMMIT; do not call mid-transaction.
-    conn.executescript(_ACTIVITY_DDL + _WELLNESS_DDL)
+    conn.executescript(_ACTIVITY_DDL + _WELLNESS_DDL + _SPLITS_DDL)
 
 
 def _encrypt_field(value: str | None, key: bytes) -> str | None:
@@ -215,3 +275,73 @@ def get_wellness(
                 d[c] = _decrypt_field(d[c], key)
         out.append(WellnessDay.model_validate(d))
     return out
+
+
+# --- per-activity splits (shared shape: PK (activity_id, split_index)) ------
+
+def _upsert_split(conn, table, columns, models, *, key=None, encrypted=()):
+    cols = ", ".join(columns)
+    placeholders = ", ".join("?" for _ in columns)
+    updates = ", ".join(
+        f"{c}=excluded.{c}" for c in columns if c not in ("activity_id", "split_index")
+    )
+    sql = (
+        f"INSERT INTO {table} ({cols}) VALUES ({placeholders}) "
+        f"ON CONFLICT(activity_id, split_index) DO UPDATE SET {updates}"
+    )
+    rows = []
+    for m in models:
+        d = m.model_dump(mode="json")
+        if key is not None:
+            for c in encrypted:
+                d[c] = _encrypt_field(d[c], key)
+        rows.append(tuple(d[c] for c in columns))
+    with conn:  # security: all values parameterized; table/columns are constants
+        conn.executemany(sql, rows)
+    return len(rows)
+
+
+def _get_splits(conn, table, model, *, activity_id=None, key=None, encrypted=()):
+    if activity_id is None:
+        cur = conn.execute(f"SELECT * FROM {table} ORDER BY activity_id, split_index")
+    else:
+        cur = conn.execute(
+            f"SELECT * FROM {table} WHERE activity_id = ? ORDER BY split_index",
+            (activity_id,),
+        )
+    out = []
+    for r in cur.fetchall():
+        d = dict(r)
+        if key is not None:
+            for c in encrypted:
+                d[c] = _decrypt_field(d[c], key)
+        out.append(model.model_validate(d))
+    return out
+
+
+def upsert_run_splits(conn, splits: list[RunSplit]) -> int:
+    return _upsert_split(conn, "run_split", RUN_SPLIT_COLUMNS, splits)
+
+
+def upsert_bike_splits(conn, splits: list[BikeSplit]) -> int:
+    return _upsert_split(conn, "bike_split", BIKE_SPLIT_COLUMNS, splits)
+
+
+def upsert_swim_splits(conn, splits: list[SwimSplit], *, key: bytes | None = None) -> int:
+    return _upsert_split(conn, "swim_split", SWIM_SPLIT_COLUMNS, splits,
+                         key=key, encrypted=ENCRYPTED_SWIM_SPLIT_COLUMNS)
+
+
+def get_run_splits(conn, activity_id: str | None = None) -> list[RunSplit]:
+    return _get_splits(conn, "run_split", RunSplit, activity_id=activity_id)
+
+
+def get_bike_splits(conn, activity_id: str | None = None) -> list[BikeSplit]:
+    return _get_splits(conn, "bike_split", BikeSplit, activity_id=activity_id)
+
+
+def get_swim_splits(
+    conn, activity_id: str | None = None, *, key: bytes | None = None
+) -> list[SwimSplit]:
+    return _get_splits(conn, "swim_split", SwimSplit, activity_id=activity_id,
+                       key=key, encrypted=ENCRYPTED_SWIM_SPLIT_COLUMNS)

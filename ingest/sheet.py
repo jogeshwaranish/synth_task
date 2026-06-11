@@ -22,7 +22,7 @@ from pydantic import ValidationError
 
 from config import Settings
 from ingest import mapping
-from schemas import Activity, Source, Sport, WellnessDay
+from schemas import Activity, BikeSplit, RunSplit, Source, Sport, SwimSplit, WellnessDay
 from security import crypto
 from store import db
 
@@ -30,6 +30,13 @@ Row = dict[str, str | None]
 
 _ACTIVITIES_TAB = "activities_raw"
 _WELLNESS_TAB = "health_raw"
+_RUN_SPLITS_TAB = "run_splits_raw"
+_BIKE_SPLITS_TAB = "bike_splits_raw"
+_SWIM_SPLITS_TAB = "swim_splits_raw"
+
+# Split tabs use float-ish indices ("1.0") and the export's own column names.
+_SWIM_CONTEXTS = {"pool", "open_water"}
+_DISTANCE_UNITS = {"yd", "m"}
 
 
 def _clean(row: dict) -> Row:
@@ -170,10 +177,109 @@ def parse_wellness_rows(rows: list[Row], *, athlete_id: str = "ag") -> list[Well
     return out
 
 
+def _split_index(v: str | None) -> int:
+    # Export stores indices as floats ("1.0"); the contract wants int >= 1.
+    return int(float(v))
+
+
+def parse_run_splits(rows: list[Row]) -> list[RunSplit]:
+    out: list[RunSplit] = []
+    for row in rows:
+        if not row.get("activity_id"):
+            continue  # padding/blank row — a real split must reference an activity
+        try:
+            out.append(RunSplit(
+                activity_id=row["activity_id"],
+                split_index=_split_index(row["split_index"]),
+                distance_mi=float(row.get("distance_mi") or 0),
+                moving_time_sec=float(row.get("moving_time_sec") or 0),
+                pace_min_per_mi=_opt_float(row.get("pace_min_per_mi")),
+                avg_hr=_opt_float(row.get("avg_hr")),
+                max_hr=_opt_float(row.get("max_hr")),
+                avg_cadence_run=_opt_float(row.get("avg_cadence_run")),
+                elevation_gain_ft=_opt_float(row.get("elevation_gain_ft")),
+                is_partial=_parse_bool(row.get("is_partial_split")),
+            ))
+        except (KeyError, TypeError, ValueError, ValidationError) as e:
+            rid = f"{row.get('activity_id')}:{row.get('split_index')}"
+            raise ValueError(f"bad run split row {rid!r}: {e}") from e
+    return out
+
+
+def parse_bike_splits(rows: list[Row]) -> list[BikeSplit]:
+    out: list[BikeSplit] = []
+    for row in rows:
+        if not row.get("activity_id"):
+            continue  # padding/blank row — a real split must reference an activity
+        try:
+            out.append(BikeSplit(
+                activity_id=row["activity_id"],
+                split_index=_split_index(row["split_index"]),
+                duration_sec=float(row.get("duration_sec") or 0),
+                distance_mi=float(row.get("distance_mi") or 0),
+                avg_speed_mph=_opt_float(row.get("avg_speed_mph")),
+                avg_hr=_opt_float(row.get("avg_hr")),
+                avg_power=_opt_float(row.get("avg_power")),
+                avg_cadence=_opt_float(row.get("avg_cadence")),
+                elevation_gain_ft=_opt_float(row.get("elevation_gain_ft")),
+                is_partial=_parse_bool(row.get("is_partial_split")),
+            ))
+        except (KeyError, TypeError, ValueError, ValidationError) as e:
+            rid = f"{row.get('activity_id')}:{row.get('split_index')}"
+            raise ValueError(f"bad bike split row {rid!r}: {e}") from e
+    return out
+
+
+def parse_swim_splits(rows: list[Row]) -> list[SwimSplit]:
+    out: list[SwimSplit] = []
+    for row in rows:
+        if not row.get("activity_id"):
+            continue  # padding/blank row — a real split must reference an activity
+        try:
+            ctx = row.get("swim_context")
+            unit = row.get("distance_unit")
+            out.append(SwimSplit(
+                activity_id=row["activity_id"],
+                split_index=_split_index(row["split_index"]),
+                swim_context=ctx if ctx in _SWIM_CONTEXTS else None,
+                distance=float(row.get("distance") or 0),
+                distance_unit=unit if unit in _DISTANCE_UNITS else "yd",
+                duration_sec=float(row.get("duration_sec") or 0),
+                pace_sec_per_100=_opt_float(row.get("pace_sec_per_100")),
+                stroke_style=row.get("stroke_style"),  # UntrustedText -> encrypted
+                swolf=_opt_float(row.get("swolf")),
+                avg_hr=_opt_float(row.get("avg_hr")),
+            ))
+        except (KeyError, TypeError, ValueError, ValidationError) as e:
+            rid = f"{row.get('activity_id')}:{row.get('split_index')}"
+            raise ValueError(f"bad swim split row {rid!r}: {e}") from e
+    return out
+
+
 def _load_rows(path: Path, tab: str) -> list[Row]:
     if path.suffix.lower() in {".xlsx", ".xlsm"}:
         return _rows_from_xlsx(path, tab)
     return _rows_from_csv(path)
+
+
+def _sync_splits(path: Path, conn, key: bytes) -> None:
+    # Splits live as extra tabs in the activities workbook (xlsx only; a CSV
+    # activities export carries no splits). Each tab is optional.
+    if path.suffix.lower() not in {".xlsx", ".xlsm"}:
+        return
+    wb = load_workbook(path, read_only=True)
+    try:
+        names = set(wb.sheetnames)
+    finally:
+        wb.close()
+    if _RUN_SPLITS_TAB in names:
+        db.upsert_run_splits(conn, parse_run_splits(_rows_from_xlsx(path, _RUN_SPLITS_TAB)))
+    if _BIKE_SPLITS_TAB in names:
+        db.upsert_bike_splits(conn, parse_bike_splits(_rows_from_xlsx(path, _BIKE_SPLITS_TAB)))
+    if _SWIM_SPLITS_TAB in names:
+        db.upsert_swim_splits(
+            conn, parse_swim_splits(_rows_from_xlsx(path, _SWIM_SPLITS_TAB)), key=key
+        )
 
 
 # security(Anish): wellness ingestion no longer hard-codes a tab/column layout —
@@ -232,6 +338,7 @@ def sync_sheet(s: Settings, conn) -> int:
         _load_rows(Path(s.sheet_activities_path), _ACTIVITIES_TAB)
     )
     n = db.upsert_activities(conn, activities, key=key)
+    _sync_splits(Path(s.sheet_activities_path), conn, key)  # run/bike/swim split tabs
     if s.sheet_wellness_path is not None and Path(s.sheet_wellness_path).exists():
         days = _ingest_wellness_mapped(Path(s.sheet_wellness_path), s, key)
         db.upsert_wellness(conn, days, key=key)

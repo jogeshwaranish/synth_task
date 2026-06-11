@@ -98,8 +98,14 @@ per workbook shape, then parsing deterministically:
 - The mapping is **cached encrypted**, keyed by a header fingerprint, so cost
   scales per sheet-shape, not per row or per sync.
 - `notes` remains the encrypted-at-rest injection surface via the existing seam.
-Splits/segments tabs are deliberately not yet ingested (nothing downstream
-consumes split-grain data; revisit when `analyze/` needs it).
+Per-activity splits (`run_splits_raw`/`bike_splits_raw`/`swim_splits_raw`) ARE
+now ingested into `run_split`/`bike_split`/`swim_split` (PK
+`(activity_id, split_index)`) for the agent's drill-down; `SwimSplit.stroke_style`
+(UntrustedText) is encrypted at rest like other PII. Rows without an
+`activity_id` are skipped as padding (verified to carry no split metrics).
+`run_segments_raw` is NOT ingested: the contract has no `RunSegment` model, so
+capturing it needs a `CONTRACT_VERSION` bump + sign-off — deferred as a separate
+proposal.
 
 ## Real-data fixture stays private
 `triathlon_sheet.xlsx` and the loose `*.csv` export are real personal training
