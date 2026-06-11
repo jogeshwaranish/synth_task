@@ -65,6 +65,20 @@ Encryption is keyed (`upsert_activities(..., key=)` / `get_activities(..., key=)
 data. They are gitignored. Before submission we either keep the repo PRIVATE or
 anonymize the fixture. Flagging here so the call is explicit, not accidental.
 
+## Sheet ingest is row-oriented; the daily join is computed, not stored
+`ingest/sheet.py` parsers take rows (list of dicts) — the file format lives in
+two thin loaders (stdlib csv for tab exports, openpyxl for the original xlsx
+workbook the take-home shipped as). Both yield identical str|None dicts, so
+parsing/validation is format-agnostic and tested once. `DailyRow` is produced
+by the pure function `normalize/join.build_daily_rows` on demand and never
+materialized: at this scale recomputation is instant, and a stored copy would
+need invalidation on every re-sync. Revisit only if `analyze/` proves it needs
+SQL over days. Wellness rows land in a `wellness` table with `notes` (the
+contract's primary injection surface) encrypted like the activity PII columns.
+Wellness column names are an assumption until AG populates the tab
+(CONTRACT.md open items 1–2). `synth sync` now syncs every *configured* source
+and skips unconfigured ones instead of crashing.
+
 ## Foundation commit for pre-existing contract/config files
 The plan assumed `schemas.py`, `CONTRACT.md`, `.gitignore`, `.env.example`,
 `config.py`, and `uv.lock` "already existed", but no task committed them. They
