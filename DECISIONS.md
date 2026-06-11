@@ -80,6 +80,27 @@ two LLM boundaries:
 Both are pure, tested primitives; Basil's `synthesize/` agent wires them in (wrap
 every `UntrustedText` into prompts; route every model response through validate).
 
+## Wellness ingestion: LLM infers the column mapping, code does the parsing
+Real workbooks don't share a layout — AG's export keeps wellness in
+`daily_summary` under names like `date`/`in_bed`/`notes`, not the empty
+`health_raw` the original parser hard-coded, so zero wellness ingested.
+`ingest/mapping.py` fixes this by inferring a column→`WellnessDay` mapping ONCE
+per workbook shape, then parsing deterministically:
+- **The LLM is a config compiler, not a runtime DB agent.** It sees only column
+  headers + a few sample cells (wrapped via `wrap_untrusted`), never full row
+  values; those stay in deterministic code. Its output is strictly validated
+  (known target fields only, sources must be real columns, `local_date`
+  required) before use — invalid → reject + log.
+- **Canonical fast-path:** sheets already using contract field names map by
+  identity with no LLM call (keeps conformant sheets + test fixtures offline);
+  the LLM is only the fallback for non-conforming layouts.
+- **Empty tabs aren't offered** as candidates (skips the empty `health_raw`).
+- The mapping is **cached encrypted**, keyed by a header fingerprint, so cost
+  scales per sheet-shape, not per row or per sync.
+- `notes` remains the encrypted-at-rest injection surface via the existing seam.
+Splits/segments tabs are deliberately not yet ingested (nothing downstream
+consumes split-grain data; revisit when `analyze/` needs it).
+
 ## Real-data fixture stays private
 `triathlon_sheet.xlsx` and the loose `*.csv` export are real personal training
 data. They are gitignored. Before submission we either keep the repo PRIVATE or
