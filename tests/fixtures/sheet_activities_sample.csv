@@ -1,0 +1,9 @@
+activity_id,start_date_local,start_date_utc,name,sport_type,trainer,moving_time_sec,elapsed_time_sec,distance_mi,total_elevation_gain_ft,average_speed_mph,average_heartrate,max_heartrate,average_watts,weighted_average_watts,kilojoules,average_cadence,device_name,suffer_score,calories,perceived_exertion,achievement_count,has_heartrate
+S0001,2026-06-01 7:00:00,2026-06-01T11:00:00Z,Morning Run,Run,FALSE,1800,1900,3.0,98.4,6.0,150,165,,,,88,Garmin Forerunner 945,40,310,6,2,TRUE
+S0002,2026-06-01 12:30:00,2026-06-01T16:30:00Z,Lunch Ride,Ride,FALSE,3600,3650,20.0,492.1,20.0,130,150,180,195,648,85,Wahoo ELEMNT,55,,,0,TRUE
+S0003,2026-06-01 18:00:00,2026-06-01T22:00:00Z,Evening Swim,Swim,FALSE,1500,,0.62,,,,,,,,,,,,,0,FALSE
+S0004,2026-06-02 6:00:00,2026-06-02T10:00:00Z,Zwift - Tempus Fugit,VirtualRide,TRUE,2700,2700,15.5,120.0,20.7,125,140,165,170,445,90,Zwift,38,,,0,TRUE
+S0005,2026-06-02 23:58:00,2026-06-03T03:58:00Z,Midnight-ish Run,VirtualRun,TRUE,1200,1200,1.9,0,5.7,148,160,,,,86,Zwift Run,20,,,0,TRUE
+S0006,2026-06-03 9:00:00,2026-06-03T13:00:00Z,Hot Yoga,Yoga,FALSE,3600,3600,0,,,,,,,,,,,,,0,FALSE
+S0007,2026-06-04 8:00:00,2026-06-04T12:00:00Z,Dog Walk,Walk,FALSE,2400,2500,1.5,20.0,2.3,95,110,,,,,iPhone,,,,0,TRUE
+S0008,2026-06-05 7:15:00,,Tempo Run,Run,FALSE,2400,,5.0,55.0,7.5,162,178,,,,90,Garmin Forerunner 945,72,,8,1,TRUE
