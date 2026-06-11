@@ -14,9 +14,13 @@ and must be wrapped via synthesize/prompts.wrap_untrusted() before any prompt.
 from __future__ import annotations
 
 import csv
+from datetime import date, datetime
 from pathlib import Path
 
 from openpyxl import load_workbook
+from pydantic import ValidationError
+
+from schemas import Activity, Source, Sport, WellnessDay
 
 Row = dict[str, str | None]
 
@@ -63,3 +67,60 @@ def _rows_from_xlsx(path: str | Path, tab: str) -> list[Row]:
         ]
     finally:
         wb.close()
+
+
+def _f(v: str | None) -> float | None:
+    return None if v is None else float(v)
+
+
+def _bool(v: str | None) -> bool:
+    # csv export says TRUE/FALSE; xlsx bool cells stringify to True/False.
+    return v is not None and v.upper() == "TRUE"
+
+
+def _local_dt(v: str) -> datetime:
+    # Sheet wall-clock format, not zero-padded: "2026-05-14 4:05:28". Naive on
+    # purpose — local_date derives from this, never from UTC (join rule).
+    return datetime.strptime(v, "%Y-%m-%d %H:%M:%S")
+
+
+def _utc_dt(v: str | None) -> datetime | None:
+    return None if not v else datetime.fromisoformat(v.replace("Z", "+00:00"))
+
+
+def parse_activity_rows(rows: list[Row], *, athlete_id: str = "ag") -> list[Activity]:
+    out: list[Activity] = []
+    for row in rows:
+        try:
+            start_local = _local_dt(row["start_date_local"])
+            out.append(Activity(
+                activity_id=row["activity_id"],
+                source=Source.SHEET,
+                athlete_id=athlete_id,
+                start_local=start_local,
+                start_utc=_utc_dt(row.get("start_date_utc")),
+                local_date=start_local.date(),
+                name=row.get("name") or "",
+                sport=Sport.normalize(row.get("sport_type") or "Other"),
+                is_trainer=_bool(row.get("trainer")),
+                moving_time_sec=float(row.get("moving_time_sec") or 0),
+                elapsed_time_sec=_f(row.get("elapsed_time_sec")),
+                distance_mi=float(row.get("distance_mi") or 0),
+                elevation_gain_ft=_f(row.get("total_elevation_gain_ft")),
+                avg_speed_mph=_f(row.get("average_speed_mph")),
+                avg_hr=_f(row.get("average_heartrate")),
+                max_hr=_f(row.get("max_heartrate")),
+                avg_watts=_f(row.get("average_watts")),
+                weighted_watts=_f(row.get("weighted_average_watts")),
+                kilojoules=_f(row.get("kilojoules")),
+                avg_cadence=_f(row.get("average_cadence")),
+                suffer_score=_f(row.get("suffer_score")),
+                calories=_f(row.get("calories")),
+                perceived_exertion=_f(row.get("perceived_exertion")),
+                device_name=row.get("device_name"),
+            ))
+        except (KeyError, TypeError, ValueError, ValidationError) as e:
+            rid = row.get("activity_id") or "<missing activity_id>"
+            # Loud failure with row identity — never skip rows silently.
+            raise ValueError(f"bad sheet activity row {rid!r}: {e}") from e
+    return out
