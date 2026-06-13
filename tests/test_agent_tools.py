@@ -119,3 +119,36 @@ def test_get_activity_detail_missing_id_returns_error(tmp_path):
     assert tools.get_activity_detail(conn, key, activity_id="nope") == {
         "error": "no activity with id 'nope'"
     }
+
+
+def test_compare_periods_aggregates_and_diffs(tmp_path):
+    conn = _conn(tmp_path)
+    db.upsert_metrics(conn, [
+        _metric("2026-06-01", acute_load_7d=400.0),
+        _metric("2026-06-02", acute_load_7d=500.0),   # period A mean 450
+        _metric("2026-06-08", acute_load_7d=200.0),
+        _metric("2026-06-09", acute_load_7d=300.0),   # period B mean 250
+    ])
+    out = tools.compare_periods(
+        conn, "ag", None,
+        period_a_start="2026-06-01", period_a_end="2026-06-02",
+        period_b_start="2026-06-08", period_b_end="2026-06-09",
+    )
+    assert out["period_a"]["mean_acute_load_7d"] == 450.0
+    assert out["period_b"]["mean_acute_load_7d"] == 250.0
+    assert out["deltas"]["mean_acute_load_7d"] == 200.0   # A - B
+
+
+def test_dispatch_routes_by_name_and_handles_unknown(tmp_path):
+    conn = _conn(tmp_path)
+    db.upsert_anomalies(conn, [_anomaly("acwr", AnomalySeverity.FLAG)])
+    routed = tools.dispatch(conn, None, "ag", "query_anomalies", {"severity": "flag"})
+    assert routed[0]["metric"] == "acwr"
+    assert tools.dispatch(conn, None, "ag", "bogus_tool", {}) == {
+        "error": "unknown tool 'bogus_tool'"
+    }
+
+
+def test_digest_is_short_and_names_the_tool():
+    d = tools.digest("query_anomalies", [{"metric": "acwr"}, {"metric": "rhr"}])
+    assert "query_anomalies" in d and len(d) <= 500

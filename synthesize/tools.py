@@ -127,3 +127,59 @@ def get_activity_detail(conn, key, *, activity_id: str) -> dict:
                         for s in db.get_bike_splits(conn, activity_id)],
         "swim_splits": swims,
     }
+
+
+def _mean_or_none(xs: list[float]) -> float | None:
+    return sum(xs) / len(xs) if xs else None
+
+
+def _period_aggregate(conn, athlete_id: str, lo: date, hi: date) -> dict:
+    metrics = [m for m in db.get_metrics(conn, athlete_id=athlete_id)
+               if lo <= m.local_date <= hi]
+    acute = [m.acute_load_7d for m in metrics if m.acute_load_7d is not None]
+    acwr = [m.acwr for m in metrics if m.acwr is not None]
+    return {
+        "n_days": len(metrics),
+        "mean_acute_load_7d": _mean_or_none(acute),
+        "mean_acwr": _mean_or_none(acwr),
+    }
+
+
+def compare_periods(
+    conn, athlete_id: str, key, *,
+    period_a_start: str, period_a_end: str,
+    period_b_start: str, period_b_end: str,
+) -> dict:
+    a = _period_aggregate(conn, athlete_id,
+                          date.fromisoformat(period_a_start),
+                          date.fromisoformat(period_a_end))
+    b = _period_aggregate(conn, athlete_id,
+                          date.fromisoformat(period_b_start),
+                          date.fromisoformat(period_b_end))
+    deltas = {
+        k: (a[k] - b[k]) if a[k] is not None and b[k] is not None else None
+        for k in ("mean_acute_load_7d", "mean_acwr")
+    }
+    return {"period_a": a, "period_b": b, "deltas": deltas}
+
+
+def dispatch(conn, key, athlete_id: str, name: str, args: dict):
+    if name == "query_anomalies":
+        return query_anomalies(conn, severity=args.get("severity"))
+    if name == "get_daily_metrics":
+        return get_daily_metrics(conn, athlete_id, **args)
+    if name == "get_activity_detail":
+        return get_activity_detail(conn, key, **args)
+    if name == "compare_periods":
+        return compare_periods(conn, athlete_id, key, **args)
+    return {"error": f"unknown tool '{name}'"}
+
+
+def digest(name: str, result) -> str:
+    if isinstance(result, list):
+        body = f"{len(result)} rows"
+    elif isinstance(result, dict) and "error" in result:
+        body = result["error"]
+    else:
+        body = json.dumps(result, default=str)
+    return f"{name} -> {body}"[:500]
