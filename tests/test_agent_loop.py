@@ -194,3 +194,50 @@ def test_exhausting_iterations_raises(tmp_path):
     with pytest.raises(InsightRejected):
         run_synthesis(conn, s, "ag", date(2026, 6, 1), date(2026, 6, 7),
                       key=key, client=client, max_iterations=3)
+
+
+from synthesize.agent import _extract_json
+
+
+def test_extract_json_handles_prose_preamble_and_fence():
+    # Real models prepend reasoning and fence the JSON, despite instructions.
+    wrapped = ("Here is my reasoning about the data.\n\n"
+               "```json\n" + _report_json() + "\n```\n\nLet me know if you need more.")
+    assert json.loads(_extract_json(wrapped))["athlete_id"] == "ag"
+
+
+def test_extract_json_handles_bare_prose_then_object():
+    bare = "Based on the analysis: " + _report_json()
+    assert json.loads(_extract_json(bare))["summary"].startswith("Load spiked")
+
+
+def test_run_synthesis_accepts_prose_wrapped_final_answer(tmp_path):
+    s = _settings(tmp_path)
+    conn = db.connect(s.synth_db_path)
+    db.init_db(conn)
+    key = crypto.load_or_create_key(s.encryption_key_path)
+    _seed(conn, key)
+    client = FakeClient([
+        SimpleNamespace(stop_reason="end_turn", content=[
+            _text("I have enough evidence to emit the report.\n\n```json\n"
+                  + _report_json() + "\n```"),
+        ]),
+    ])
+    report = run_synthesis(conn, s, "ag", date(2026, 6, 1), date(2026, 6, 7),
+                           key=key, client=client)
+    assert report.summary.startswith("Load spiked")
+
+
+def test_system_prompt_describes_every_pattern_field():
+    # The model must emit Pattern objects matching the contract; the prompt has
+    # to name every field or the model invents its own (caught live: it used
+    # name/detail/anomaly_ids). This guards against contract drift.
+    from schemas import Pattern, SynthesisReport
+    from synthesize.agent import _SYSTEM
+    for field in Pattern.model_fields:
+        assert field in _SYSTEM, f"Pattern.{field} missing from system prompt"
+    # And the two enums the model must pick from.
+    for kind in ("trend", "correlation", "anomaly_explanation", "observation"):
+        assert kind in _SYSTEM
+    for conf in ("low", "medium", "high"):
+        assert conf in _SYSTEM
