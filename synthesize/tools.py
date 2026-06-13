@@ -99,3 +99,31 @@ def get_daily_metrics(
         for m in db.get_metrics(conn, athlete_id=athlete_id)
         if lo <= m.local_date <= hi
     ]
+
+
+def get_activity_detail(conn, key, *, activity_id: str) -> dict:
+    matches = [a for a in db.get_activities(conn, key=key)
+               if a.activity_id == activity_id]
+    if not matches:
+        return {"error": f"no activity with id '{activity_id}'"}
+    activity = matches[0].model_dump(mode="json")
+    # Fence UntrustedText: it is fed straight back to the model as content.
+    for field in ("name", "device_name"):
+        if activity.get(field) is not None:
+            activity[field] = wrap_untrusted(activity[field])
+
+    swims = []
+    for s in db.get_swim_splits(conn, activity_id, key=key):
+        d = s.model_dump(mode="json")
+        if d.get("stroke_style") is not None:
+            d["stroke_style"] = wrap_untrusted(d["stroke_style"])
+        swims.append(d)
+
+    return {
+        "activity": activity,
+        "run_splits": [s.model_dump(mode="json")
+                       for s in db.get_run_splits(conn, activity_id)],
+        "bike_splits": [s.model_dump(mode="json")
+                        for s in db.get_bike_splits(conn, activity_id)],
+        "swim_splits": swims,
+    }
