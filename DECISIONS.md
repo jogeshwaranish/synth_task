@@ -135,3 +135,30 @@ The plan assumed `schemas.py`, `CONTRACT.md`, `.gitignore`, `.env.example`,
 were committed together early (before any secret could land) so `.gitignore`
 protects `.env`/`.tokens/`/`*.db` from the first moment and the locked contract
 is under version control.
+
+## Analyze: padded-calendar windows, split-half trends, deterministic anomaly ids
+`analyze/metrics.py` computes everything relative to the athlete's OWN rolling
+history, per the spec's detector catalog. The non-obvious calls:
+- **Calendar padding.** DailyRows only exist for days with data; windows run
+  over the full calendar span, where a missing day = 0 training minutes and a
+  `rest_day=True` DailyMetrics. Rest days are signal, and skipping them would
+  inflate every rolling load.
+- **Gating:** acute needs ≥7 calendar days, chronic/ACWR/z-score ≥28
+  (`None` below — spec rule), z-score also `None` at zero variance, ACWR `None`
+  at zero chronic. Population std.
+- **Trends are split-half** (recent 7d mean vs prior 7d mean, ≥2 valued days
+  per half) rather than regression: trivially explainable in an anomaly
+  description and to the agent. HR-at-pace uses **beats per mile**
+  (`avg_hr × pace`) as the decoupling proxy.
+- **Thresholds** (tunable constants at the top of the module): ACWR safe window
+  0.8–1.3, watch outside it, flag >1.5 (Gabbett); load z>2 watch / z>3 flag
+  (high side only — the low side is ACWR<0.8's job); trends >5% watch / >10%
+  flag; rhr/hrv z ±2 watch / ±3 flag against a 28d rolling baseline gated on
+  ≥14 values. The wellness detectors are LIVE, not dormant — the real
+  workbook's daily_summary populates rhr/hrv.
+- **Deterministic anomaly ids** (`athlete:date:metric`) make `synth analyze`
+  idempotent via upsert. The locked `Anomaly` model has no athlete_id field;
+  the id carries it (single-athlete MVP).
+- `daily_metrics`/`anomaly` tables hold only code-computed numerics and
+  code-authored descriptions (trusted per contract) — no encrypted columns, so
+  the agent's queries can filter on them.
