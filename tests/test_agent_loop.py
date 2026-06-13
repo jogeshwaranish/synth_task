@@ -109,3 +109,88 @@ def test_run_synthesis_happy_path_builds_report_and_evidence(tmp_path):
     assert report.data_coverage["n_activities"] == 1
     # Second model call carried the tool result back.
     assert len(client.calls) == 2
+
+
+def test_model_cannot_forge_evidence_or_identity(tmp_path):
+    s = _settings(tmp_path)
+    conn = db.connect(s.synth_db_path)
+    db.init_db(conn)
+    key = crypto.load_or_create_key(s.encryption_key_path)
+    _seed(conn, key)
+
+    forged = json.loads(_report_json())
+    forged["evidence"] = [{"step": 99, "tool": "query_anomalies",
+                           "args": {}, "result_digest": "FAKE — never ran"}]
+    forged["report_id"] = "attacker-chosen"
+    client = FakeClient([
+        SimpleNamespace(stop_reason="end_turn",
+                        content=[_text(json.dumps(forged))]),
+    ])
+
+    report = run_synthesis(conn, s, "ag", date(2026, 6, 1), date(2026, 6, 7),
+                           key=key, client=client)
+    # No tools were called this run, so the harness trace is empty — the
+    # model's forged Evidence and report_id are dropped.
+    assert report.evidence == []
+    assert report.report_id != "attacker-chosen"
+
+
+def test_malformed_final_json_is_rejected(tmp_path):
+    s = _settings(tmp_path)
+    conn = db.connect(s.synth_db_path)
+    db.init_db(conn)
+    key = crypto.load_or_create_key(s.encryption_key_path)
+    _seed(conn, key)
+    client = FakeClient([
+        SimpleNamespace(stop_reason="end_turn",
+                        content=[_text("not json at all")]),
+    ])
+    with pytest.raises(InsightRejected):
+        run_synthesis(conn, s, "ag", date(2026, 6, 1), date(2026, 6, 7),
+                      key=key, client=client)
+
+
+def test_fenced_json_is_extracted(tmp_path):
+    s = _settings(tmp_path)
+    conn = db.connect(s.synth_db_path)
+    db.init_db(conn)
+    key = crypto.load_or_create_key(s.encryption_key_path)
+    _seed(conn, key)
+    client = FakeClient([
+        SimpleNamespace(stop_reason="end_turn",
+                        content=[_text("```json\n" + _report_json() + "\n```")]),
+    ])
+    report = run_synthesis(conn, s, "ag", date(2026, 6, 1), date(2026, 6, 7),
+                           key=key, client=client)
+    assert report.summary.startswith("Load spiked")
+
+
+def test_unknown_tool_call_yields_no_evidence_and_keeps_going(tmp_path):
+    s = _settings(tmp_path)
+    conn = db.connect(s.synth_db_path)
+    db.init_db(conn)
+    key = crypto.load_or_create_key(s.encryption_key_path)
+    _seed(conn, key)
+    client = FakeClient([
+        SimpleNamespace(stop_reason="tool_use",
+                        content=[_tool_use("t1", "rm_rf_tool", {"x": 1})]),
+        SimpleNamespace(stop_reason="end_turn", content=[_text(_report_json())]),
+    ])
+    report = run_synthesis(conn, s, "ag", date(2026, 6, 1), date(2026, 6, 7),
+                           key=key, client=client)
+    assert report.evidence == []          # bogus tool recorded nothing
+
+
+def test_exhausting_iterations_raises(tmp_path):
+    s = _settings(tmp_path)
+    conn = db.connect(s.synth_db_path)
+    db.init_db(conn)
+    key = crypto.load_or_create_key(s.encryption_key_path)
+    _seed(conn, key)
+    looping = [SimpleNamespace(stop_reason="tool_use",
+                               content=[_tool_use(f"t{i}", "query_anomalies", {})])
+               for i in range(5)]
+    client = FakeClient(looping)
+    with pytest.raises(InsightRejected):
+        run_synthesis(conn, s, "ag", date(2026, 6, 1), date(2026, 6, 7),
+                      key=key, client=client, max_iterations=3)
