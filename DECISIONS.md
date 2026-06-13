@@ -216,3 +216,28 @@ shape (prompt now lists every contract field + enum; a test asserts the prompt
 covers `Pattern.model_fields`). Lesson: validate_insight's fail-closed rejection
 worked exactly as designed — but agent UX needs at least one real-model run, not
 just scripted fakes.
+
+## Strava + sheet are ONE athlete, two sources (not two athletes)
+Earlier the pipeline stamped Strava under `strava_athlete_id` ("anish") and the
+sheet under a hard-coded "ag", treating them as two athletes kept distinct by
+`athlete_id`. That was wrong: the product's whole point is fusing ONE athlete's
+training (Strava) and recovery/wellness (sheet) into a single picture. With split
+ids the daily join (`(athlete_id, local_date)`) never fused, so a report saw only
+one silo (Strava activities with `n_wellness_days=0`, or sheet data alone). Fix:
+both ingest paths stamp the same `athlete_id` (Strava's configured id);
+provenance still lives on the `source` axis (STRAVA_API vs SHEET) and survives to
+synthesis via `DailyRow.source_mix`, so nothing is lost by sharing the id.
+Existing split-id rows are reproducible, so they get remapped/re-synced rather
+than migrated carefully.
+
+## Synthesis voice: physiology-literate coach, insight over summary, evidence last
+The synthesis system prompt was a neutral "analyst" that produced exhaustive,
+jargon-heavy recaps (ACWR, aerobic decoupling, z-scores) the athlete couldn't
+read. Reframed it to reason like an endurance coach/exercise physiologist for ONE
+athlete: surface only the few patterns that change how they train/recover (2-4,
+not a full enumeration), distinguish real signal from statistical artifact (e.g.
+cold-start ratio spikes off a near-zero base), and speak in plain athlete language
+— lead with the takeaway and what to do, cite the numbers/metric-names as
+supporting EVIDENCE at the end (technical names live in `metrics_involved`). The
+locked output schema is unchanged; this is prompt/voice only, so validate_insight
+and the contract still hold.
