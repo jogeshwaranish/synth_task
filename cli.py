@@ -13,6 +13,8 @@ from ingest.strava import sync_strava
 from normalize.join import build_daily_rows
 from security import crypto
 from store import db
+from synthesize.report import generate_report
+from synthesize.validate import InsightRejected
 
 
 def _cmd_sync(args: argparse.Namespace) -> int:
@@ -64,11 +66,22 @@ def _cmd_analyze(_args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_stub(name: str):
-    def run(_args: argparse.Namespace) -> int:
-        print(f"`{name}` arrives in the follow-on plan (sheet/join/metrics/agent).")
-        return 0
-    return run
+def _cmd_report(args: argparse.Namespace) -> int:
+    s = get_settings()
+    print("config:", s.safe_summary(), file=sys.stderr)  # redacted; keep stdout clean
+    conn = db.connect(s.synth_db_path)
+    db.init_db(conn)
+    try:
+        report = generate_report(conn, s, athlete=args.athlete,
+                                 start=args.start, end=args.end)
+    except ValueError as e:
+        print(f"cannot report: {e}", file=sys.stderr)
+        return 1
+    except InsightRejected as e:
+        print(f"report rejected: {e}", file=sys.stderr)
+        return 1
+    print(report.model_dump_json(indent=2))              # the deliverable
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -83,7 +96,11 @@ def build_parser() -> argparse.ArgumentParser:
     analyze = sub.add_parser("analyze", help="compute training-load metrics + anomalies")
     analyze.set_defaults(func=_cmd_analyze)
 
-    sub.add_parser("report").set_defaults(func=_cmd_stub("report"))
+    report = sub.add_parser("report", help="run the synthesis agent and print a SynthesisReport")
+    report.add_argument("--athlete", default=None, help="athlete_id (default: busiest in the DB)")
+    report.add_argument("--start", default=None, help="period start YYYY-MM-DD")
+    report.add_argument("--end", default=None, help="period end YYYY-MM-DD")
+    report.set_defaults(func=_cmd_report)
 
     return p
 

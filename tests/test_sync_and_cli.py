@@ -110,9 +110,44 @@ def test_cli_sync_refresh_flag_forces_token_refresh(tmp_path, monkeypatch):
     assert seen_kwargs["force_refresh"] is True
 
 
-def test_cli_report_is_a_stub_for_now(capsys):
-    assert cli.main(["report"]) == 0
-    assert "follow-on plan" in capsys.readouterr().out
+def test_cli_report_prints_validated_json_to_stdout(tmp_path, monkeypatch, capsys):
+    from datetime import date, datetime, timezone
+    from schemas import SynthesisReport
+    s = _settings(tmp_path)
+    monkeypatch.setattr(cli, "get_settings", lambda: s)
+
+    canned = SynthesisReport(
+        report_id="r1", generated_at=datetime(2026, 6, 12, tzinfo=timezone.utc),
+        athlete_id="ag", period_start=date(2026, 6, 1), period_end=date(2026, 6, 7),
+        summary="ok", patterns=[],
+    )
+    seen = {}
+
+    def fake_generate(conn, settings, *, athlete=None, start=None, end=None):
+        seen.update(athlete=athlete, start=start, end=end)
+        return canned
+
+    monkeypatch.setattr(cli, "generate_report", fake_generate)
+
+    assert cli.main(["report", "--athlete", "ag", "--start", "2026-06-01"]) == 0
+    out = capsys.readouterr().out
+    parsed = __import__("json").loads(out)           # stdout is pure JSON
+    assert parsed["athlete_id"] == "ag" and parsed["report_id"] == "r1"
+    assert "HUSH_CLIENT_SECRET" not in out
+    assert seen == {"athlete": "ag", "start": "2026-06-01", "end": None}
+
+
+def test_cli_report_with_no_data_fails_clearly(tmp_path, monkeypatch, capsys):
+    s = _settings(tmp_path)
+    monkeypatch.setattr(cli, "get_settings", lambda: s)
+
+    def boom(conn, settings, *, athlete=None, start=None, end=None):
+        raise ValueError("no daily metrics in the store — run analyze first")
+
+    monkeypatch.setattr(cli, "generate_report", boom)
+    assert cli.main(["report"]) == 1
+    err = capsys.readouterr().err
+    assert "run analyze first" in err
 
 
 def _stored_run(conn, key, i, day, minutes=60.0):
