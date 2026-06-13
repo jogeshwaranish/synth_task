@@ -205,3 +205,14 @@ history, per the spec's detector catalog. The non-obvious calls:
 - Endpoints/commands import the wrapped functions by name so tests monkeypatch
   them and never touch the network — the agent's injected-client seam keeps the
   whole serving layer offline-testable.
+
+## Agent loop hardened against real model output (live smoke)
+The offline scripted tests passed but the first live run (claude-opus-4-8 over
+the real workbook) exposed three gaps, now fixed + regression-tested: the model
+prepends prose around a ```json fence (robust `_extract_json`), a report citing
+75 anomaly_ids overran 4096 output tokens (raised to 16384), and the model
+invented `Pattern` keys because the system prompt never described the `Pattern`
+shape (prompt now lists every contract field + enum; a test asserts the prompt
+covers `Pattern.model_fields`). Lesson: validate_insight's fail-closed rejection
+worked exactly as designed — but agent UX needs at least one real-model run, not
+just scripted fakes.
