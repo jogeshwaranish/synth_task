@@ -316,13 +316,15 @@ def _ingest_wellness_mapped(path: Path, s: Settings, key: bytes) -> list[Wellnes
     if path.suffix.lower() in {".xlsx", ".xlsm"}:
         tabs = _tabs_preview(path)
         return mapping.ingest_wellness(
-            tabs, lambda tab: _rows_from_xlsx(path, tab), settings=s, key=key
+            tabs, lambda tab: _rows_from_xlsx(path, tab), settings=s, key=key,
+            athlete_id=s.strava_athlete_id,
         )
     # CSV has no tabs — treat the whole file as a single candidate sheet.
     rows = _rows_from_csv(path)
     headers = list(rows[0].keys()) if rows else []
     tabs = {"__csv__": mapping.TabPreview(headers=headers, samples=rows[:3])}
-    return mapping.ingest_wellness(tabs, lambda _tab: rows, settings=s, key=key)
+    return mapping.ingest_wellness(tabs, lambda _tab: rows, settings=s, key=key,
+                                   athlete_id=s.strava_athlete_id)
 
 
 def sync_sheet(s: Settings, conn) -> int:
@@ -334,8 +336,11 @@ def sync_sheet(s: Settings, conn) -> int:
     if s.sheet_activities_path is None:
         raise RuntimeError("Set SHEET_ACTIVITIES_PATH in .env")
     key = crypto.load_or_create_key(s.encryption_key_path)  # encrypt PII at rest
+    # Strava + sheet are ONE athlete with two sources; both stamp the same
+    # athlete_id (provenance lives on the `source` axis). See DECISIONS.md.
     activities = parse_activity_rows(
-        _load_rows(Path(s.sheet_activities_path), _ACTIVITIES_TAB)
+        _load_rows(Path(s.sheet_activities_path), _ACTIVITIES_TAB),
+        athlete_id=s.strava_athlete_id,
     )
     n = db.upsert_activities(conn, activities, key=key)
     _sync_splits(Path(s.sheet_activities_path), conn, key)  # run/bike/swim split tabs
