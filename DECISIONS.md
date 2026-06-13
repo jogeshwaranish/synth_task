@@ -241,3 +241,23 @@ cold-start ratio spikes off a near-zero base), and speak in plain athlete langua
 supporting EVIDENCE at the end (technical names live in `metrics_involved`). The
 locked output schema is unchanged; this is prompt/voice only, so validate_insight
 and the contract still hold.
+
+## Synthetic Strava test harness for non-obvious-insight validation
+Anish's real Strava history is too sparse to exercise the synthesis agent, so
+`scripts/gen_test_strava.py` generates a deterministic (seed=42) synthetic
+athlete — ~5 months (Dec 2025-May 2026) of run/bike/swim activities + daily
+wellness — into a SEPARATE `synth_test.db` (via `SYNTH_DB_PATH`), never touching
+the real `synth.db`. Value ranges are calibrated from the real workbook
+(`activities_raw`). It plants three deliberately NON-OBVIOUS patterns, each
+tuned to `analyze/metrics.py` thresholds, to test whether the coach-agent
+surfaces what no single day reveals:
+- (A) masked aerobic decoupling — run pace held flat while HR creeps up, so
+  HR-at-pace drifts up with NO single anomaly firing (ACWR stays ~1.05);
+- (B) recovery markers lead — HRV-suppressed / RHR-elevated anomalies fire ~2
+  weeks BEFORE the HR-at-pace drift, discoverable only by fusing both sources;
+- (C) the ACWR paradox — the low-ACWR April week (detraining "watch") is the
+  HEALTHY recovery, while the normal-looking ACWR hid the March overreach.
+Validated 2026-06-13: the agent found all three (plus correctly inferred the
+root cause — a 10+ week build with no deload — and dismissed the planted
+noise). The `.db` artifact stays gitignored (`*.db`); only the generator is
+tracked so the fixture is reproducible, not committed as data.
