@@ -12,7 +12,7 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import date, timedelta
 
-from schemas import DailyMetrics, DailyRow
+from schemas import Anomaly, AnomalySeverity, DailyMetrics, DailyRow
 
 # --- tunable detector thresholds (DECISIONS.md) -----------------------------
 ACWR_LOW = 0.8          # below = detraining (Gabbett sweet spot 0.8-1.3)
@@ -96,4 +96,63 @@ def compute_metrics(daily_rows: list[DailyRow]) -> list[DailyMetrics]:
                 ),
                 rest_day=minutes[i] == 0,
             ))
+    return out
+
+
+def _anomaly(athlete_id: str, d: date, metric: str, value: float,
+             severity: AnomalySeverity, description: str, *,
+             baseline: float | None = None,
+             zscore: float | None = None) -> Anomaly:
+    # Deterministic id -> re-running analyze upserts in place. The contract
+    # Anomaly has no athlete_id field, so the id carries it.
+    return Anomaly(
+        anomaly_id=f"{athlete_id}:{d.isoformat()}:{metric}",
+        local_date=d, metric=metric, value=value, baseline=baseline,
+        zscore=zscore, severity=severity, description=description,
+    )
+
+
+def _acwr_anomaly(m: DailyMetrics) -> Anomaly | None:
+    if m.acwr is None:
+        return None
+    if m.acwr > ACWR_FLAG:
+        sev = AnomalySeverity.FLAG
+    elif m.acwr > ACWR_HIGH or m.acwr < ACWR_LOW:
+        sev = AnomalySeverity.WATCH
+    else:
+        return None
+    direction = "above" if m.acwr > ACWR_HIGH else "below"
+    desc = (
+        f"ACWR {m.acwr:.2f} is {direction} the safe window "
+        f"{ACWR_LOW}-{ACWR_HIGH} (acute {m.acute_load_7d:.0f} min vs "
+        f"chronic {m.chronic_load_28d:.0f} min)."
+    )
+    return _anomaly(m.athlete_id, m.local_date, "acwr", m.acwr, sev, desc)
+
+
+def _load_zscore_anomaly(m: DailyMetrics, row: DailyRow | None) -> Anomaly | None:
+    z = m.load_zscore_28d
+    if z is None or z <= ZSCORE_WATCH:       # high side only; low = ACWR's job
+        return None
+    sev = AnomalySeverity.FLAG if z > ZSCORE_FLAG else AnomalySeverity.WATCH
+    minutes = row.training_minutes if row is not None else 0.0
+    baseline = m.chronic_load_28d / 7 if m.chronic_load_28d is not None else None
+    desc = (
+        f"Single-day load {minutes:.0f} min is z={z:+.1f} vs the 28d daily "
+        f"mean of {baseline:.0f} min."
+    )
+    return _anomaly(m.athlete_id, m.local_date, "load_zscore_28d", minutes,
+                    sev, desc, baseline=baseline, zscore=z)
+
+
+def detect_anomalies(
+    daily_rows: list[DailyRow], metrics: list[DailyMetrics]
+) -> list[Anomaly]:
+    rows = {(r.athlete_id, r.local_date): r for r in daily_rows}
+    out: list[Anomaly] = []
+    for m in metrics:
+        row = rows.get((m.athlete_id, m.local_date))
+        for candidate in (_acwr_anomaly(m), _load_zscore_anomaly(m, row)):
+            if candidate is not None:
+                out.append(candidate)
     return out
