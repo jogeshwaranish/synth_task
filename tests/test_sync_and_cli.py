@@ -110,11 +110,51 @@ def test_cli_sync_refresh_flag_forces_token_refresh(tmp_path, monkeypatch):
     assert seen_kwargs["force_refresh"] is True
 
 
-def test_cli_analyze_and_report_are_stubs_for_now(capsys):
-    assert cli.main(["analyze"]) == 0
-    assert "follow-on plan" in capsys.readouterr().out
+def test_cli_report_is_a_stub_for_now(capsys):
     assert cli.main(["report"]) == 0
     assert "follow-on plan" in capsys.readouterr().out
+
+
+def _stored_run(conn, key, i, day, minutes=60.0):
+    from datetime import datetime
+    from schemas import Activity, Source, Sport
+    start = datetime.fromisoformat(f"{day}T07:00:00")
+    db.upsert_activities(conn, [Activity(
+        activity_id=f"r{i}", source=Source.SHEET, athlete_id="ag",
+        start_local=start, local_date=start.date(), name=f"run {i}",
+        sport=Sport.RUN, moving_time_sec=minutes * 60, distance_mi=5.0,
+    )], key=key)
+
+
+def test_cli_analyze_computes_and_persists_metrics_and_anomalies(
+    tmp_path, monkeypatch, capsys
+):
+    from datetime import date, timedelta
+    s = _settings(tmp_path)
+    monkeypatch.setattr(cli, "get_settings", lambda: s)
+    conn = db.connect(s.synth_db_path)
+    db.init_db(conn)
+    key = crypto.load_or_create_key(s.encryption_key_path)
+    d0 = date(2026, 5, 1)
+    for i in range(28):                          # steady base ...
+        _stored_run(conn, key, i, (d0 + timedelta(days=i)).isoformat())
+    _stored_run(conn, key, 99, "2026-05-29", minutes=300.0)  # ... then a spike
+
+    assert cli.main(["analyze"]) == 0
+    out = capsys.readouterr().out
+    assert "29 days" in out and "daily metrics" in out
+    assert "HUSH_CLIENT_SECRET" not in out       # safe_summary() only
+
+    metrics = db.get_metrics(conn)
+    assert len(metrics) == 29                    # one per calendar day
+    assert any(a.metric == "load_zscore_28d" for a in db.get_anomalies(conn))
+
+
+def test_cli_analyze_with_empty_db_fails_clearly(tmp_path, monkeypatch, capsys):
+    s = _settings(tmp_path)
+    monkeypatch.setattr(cli, "get_settings", lambda: s)
+    assert cli.main(["analyze"]) == 1
+    assert "nothing to analyze" in capsys.readouterr().out
 
 
 def test_cli_sync_sheet_only_config_skips_strava(tmp_path, monkeypatch, capsys):

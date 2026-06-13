@@ -1,13 +1,17 @@
-"""synth CLI. `sync` is wired now; analyze/report land in the follow-on plan."""
+"""synth CLI. sync + analyze are wired; report lands with the agent plan."""
 
 from __future__ import annotations
 
 import argparse
 import sys
+from collections import Counter
 
+from analyze.metrics import compute_metrics, detect_anomalies
 from config import get_settings
 from ingest.sheet import sync_sheet
 from ingest.strava import sync_strava
+from normalize.join import build_daily_rows
+from security import crypto
 from store import db
 
 
@@ -36,6 +40,30 @@ def _cmd_sync(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_analyze(_args: argparse.Namespace) -> int:
+    s = get_settings()
+    print("config:", s.safe_summary())  # redacted — never prints secrets
+    conn = db.connect(s.synth_db_path)
+    db.init_db(conn)
+    key = crypto.load_or_create_key(s.encryption_key_path)
+    activities = db.get_activities(conn, key=key)
+    wellness = db.get_wellness(conn, key=key)
+    if not activities and not wellness:
+        print("nothing to analyze: run `synth sync` first")
+        return 1
+    daily_rows = build_daily_rows(activities, wellness)
+    metrics = compute_metrics(daily_rows)
+    anomalies = detect_anomalies(daily_rows, metrics)
+    db.upsert_metrics(conn, metrics)
+    db.upsert_anomalies(conn, anomalies)
+    by_severity = Counter(a.severity.value for a in anomalies)
+    print(
+        f"analyze: {len(daily_rows)} days -> {len(metrics)} daily metrics, "
+        f"{len(anomalies)} anomalies {dict(sorted(by_severity.items()))}"
+    )
+    return 0
+
+
 def _cmd_stub(name: str):
     def run(_args: argparse.Namespace) -> int:
         print(f"`{name}` arrives in the follow-on plan (sheet/join/metrics/agent).")
@@ -52,8 +80,10 @@ def build_parser() -> argparse.ArgumentParser:
                       help="force a token refresh before syncing")
     sync.set_defaults(func=_cmd_sync)
 
-    for name in ("analyze", "report"):
-        sub.add_parser(name).set_defaults(func=_cmd_stub(name))
+    analyze = sub.add_parser("analyze", help="compute training-load metrics + anomalies")
+    analyze.set_defaults(func=_cmd_analyze)
+
+    sub.add_parser("report").set_defaults(func=_cmd_stub("report"))
 
     return p
 
