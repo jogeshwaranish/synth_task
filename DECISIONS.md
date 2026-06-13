@@ -162,3 +162,27 @@ history, per the spec's detector catalog. The non-obvious calls:
 - `daily_metrics`/`anomaly` tables hold only code-computed numerics and
   code-authored descriptions (trusted per contract) — no encrypted columns, so
   the agent's queries can filter on them.
+
+## Synthesis: harness-brokered tool loop, model authors only the narrative
+`synthesize/agent.py` runs an Anthropic tool loop over four read-only tools
+(`synthesize/tools.py`: `query_anomalies`, `get_daily_metrics`,
+`get_activity_detail`, `compare_periods`). The non-obvious calls:
+- **The harness, not the model, owns the trace and identity.** Every tool call
+  is brokered by the loop, which appends an `Evidence` row (`Evidence.tool` is a
+  closed Literal of the four names) and fills `report_id`/`generated_at`/
+  `contract_version`/`data_coverage`. These are passed to `validate_insight()`
+  as `harness_fields`, which strips any the model tried to author. Result: a
+  hijacked model cannot forge a tool it never called or fake the report identity
+  (tested in test_agent_loop.py).
+- **Tools are pure functions over the store**, split into `tools.py` so they run
+  with no model/network — the loop and tools are tested entirely offline via an
+  injected fake client. The real `anthropic.Anthropic` client is only
+  constructed when `client is None`.
+- **UntrustedText is fenced at the tool boundary** (`get_activity_detail` wraps
+  activity name/device and swim stroke via `wrap_untrusted`) because a tool
+  result is fed straight back to the model as content. We fence, never censor.
+- **Bounded + fail-closed:** <=12 model turns; unknown tool name -> error
+  tool-result and no Evidence row; malformed/off-contract final JSON or an
+  exhausted loop -> `InsightRejected` (reject + log, never propagate).
+- CLI `report` wiring and the FastAPI surface are a separate follow-on; this
+  plan delivers `run_synthesis()` as the callable seam.
