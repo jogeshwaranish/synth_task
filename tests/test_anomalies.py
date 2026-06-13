@@ -1,6 +1,6 @@
 """detect_anomalies: each detector fires at its threshold, silent below it."""
 
-from datetime import date
+from datetime import date, timedelta
 
 from analyze.metrics import detect_anomalies
 from schemas import AnomalySeverity, DailyMetrics, DailyRow, WellnessDay
@@ -69,3 +69,55 @@ def test_descriptions_are_code_authored_and_carry_the_numbers():
     ms = [_metric(acwr=1.62, acute_load_7d=420.0, chronic_load_28d=259.0)]
     (a,) = detect_anomalies([], ms)
     assert "1.62" in a.description and "0.8" in a.description
+
+
+def test_trend_detectors_watch_over_5pct_flag_over_10pct():
+    for metric in ("pace_trend_pct_14d", "hr_at_pace_trend_pct_14d"):
+        for value, expected in ((12.0, AnomalySeverity.FLAG),
+                                (6.0, AnomalySeverity.WATCH)):
+            (a,) = _only(detect_anomalies([], [_metric(**{metric: value})]), metric)
+            assert a.severity == expected and a.value == value
+        for value in (4.0, -6.0, -12.0, None):   # improving/steady = silent
+            assert _only(detect_anomalies([], [_metric(**{metric: value})]),
+                         metric) == []
+
+
+def _wellness_history(values, day_of_interest_value, *, field="rhr"):
+    """14 baseline days then the day under test (2026-06-15)."""
+    d0 = date.fromisoformat("2026-06-01")
+    rows = [_row((d0 + timedelta(days=i)).isoformat(), **{field: v})
+            for i, v in enumerate(values)]
+    rows.append(_row("2026-06-15", **{field: day_of_interest_value}))
+    return rows
+
+
+def test_rhr_elevated_vs_28d_baseline():
+    baseline = [46.0, 48.0] * 7                  # mean 47, population std 1
+    (a,) = _only(detect_anomalies(_wellness_history(baseline, 50.0), []), "rhr")
+    assert a.severity == AnomalySeverity.FLAG    # z = +3
+    assert a.value == 50.0 and a.baseline == 47.0 and a.zscore == 3.0
+    (a,) = _only(detect_anomalies(_wellness_history(baseline, 49.5), []), "rhr")
+    assert a.severity == AnomalySeverity.WATCH   # z = +2.5
+    assert _only(detect_anomalies(_wellness_history(baseline, 48.0), []), "rhr") == []
+    # LOW rhr is good news, never an anomaly
+    assert _only(detect_anomalies(_wellness_history(baseline, 44.0), []), "rhr") == []
+
+
+def test_hrv_suppressed_vs_28d_baseline():
+    baseline = [60.0, 80.0] * 7                  # mean 70, population std 10
+    (a,) = _only(detect_anomalies(_wellness_history(baseline, 40.0, field="hrv"), []),
+                 "hrv")
+    assert a.severity == AnomalySeverity.FLAG    # z = -3
+    (a,) = _only(detect_anomalies(_wellness_history(baseline, 45.0, field="hrv"), []),
+                 "hrv")
+    assert a.severity == AnomalySeverity.WATCH   # z = -2.5
+    # HIGH hrv is good news, never an anomaly
+    assert _only(detect_anomalies(_wellness_history(baseline, 100.0, field="hrv"), []),
+                 "hrv") == []
+
+
+def test_wellness_detectors_gate_on_baseline_days_and_variance():
+    too_few = [46.0, 48.0] * 6                   # 12 < MIN_WELLNESS_BASELINE_DAYS
+    assert _only(detect_anomalies(_wellness_history(too_few, 60.0), []), "rhr") == []
+    flat = [47.0] * 14                           # std 0
+    assert _only(detect_anomalies(_wellness_history(flat, 60.0), []), "rhr") == []

@@ -155,4 +155,67 @@ def detect_anomalies(
         for candidate in (_acwr_anomaly(m), _load_zscore_anomaly(m, row)):
             if candidate is not None:
                 out.append(candidate)
+        out.extend(_trend_anomalies(m))
+    out.extend(_wellness_anomalies(daily_rows))
+    return out
+
+
+_TREND_DETECTORS = (
+    ("pace_trend_pct_14d", "14d run pace slowed"),
+    ("hr_at_pace_trend_pct_14d", "14d HR-at-pace (beats/mi) drifted up"),
+)
+
+
+def _trend_anomalies(m: DailyMetrics) -> list[Anomaly]:
+    out = []
+    for metric, label in _TREND_DETECTORS:
+        value = getattr(m, metric)
+        if value is None or value <= TREND_WATCH_PCT:
+            continue
+        sev = (AnomalySeverity.FLAG if value > TREND_FLAG_PCT
+               else AnomalySeverity.WATCH)
+        desc = f"{label} {value:+.1f}% vs the prior 7 days."
+        out.append(_anomaly(m.athlete_id, m.local_date, metric, value, sev, desc))
+    return out
+
+
+# (field, direction, label): direction +1 fires on high z, -1 on low z.
+_WELLNESS_DETECTORS = (
+    ("rhr", 1, "elevated"),
+    ("hrv", -1, "suppressed"),
+)
+
+
+def _wellness_anomalies(daily_rows: list[DailyRow]) -> list[Anomaly]:
+    by_athlete: dict[str, list[DailyRow]] = defaultdict(list)
+    for r in sorted(daily_rows, key=lambda r: (r.athlete_id, r.local_date)):
+        if r.wellness is not None:
+            by_athlete[r.athlete_id].append(r)
+
+    out: list[Anomaly] = []
+    for athlete_id, rows in by_athlete.items():
+        for field, direction, label in _WELLNESS_DETECTORS:
+            points = [(r.local_date, getattr(r.wellness, field))
+                      for r in rows if getattr(r.wellness, field) is not None]
+            for i, (d, value) in enumerate(points):
+                window = [v for (dd, v) in points[:i]
+                          if 0 < (d - dd).days <= WELLNESS_WINDOW_DAYS]
+                if len(window) < MIN_WELLNESS_BASELINE_DAYS:
+                    continue
+                mean, sd = _mean(window), _std(window)
+                if sd == 0:
+                    continue
+                z = (value - mean) / sd
+                if direction * z >= ZSCORE_FLAG:
+                    sev = AnomalySeverity.FLAG
+                elif direction * z >= ZSCORE_WATCH:
+                    sev = AnomalySeverity.WATCH
+                else:
+                    continue
+                desc = (
+                    f"{field.upper()} {value:.0f} is {label} vs its 28d "
+                    f"baseline {mean:.0f} (z={z:+.1f})."
+                )
+                out.append(_anomaly(athlete_id, d, field, value, sev, desc,
+                                    baseline=mean, zscore=z))
     return out
