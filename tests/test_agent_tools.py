@@ -44,3 +44,33 @@ def test_query_anomalies_lists_all_then_filters_by_severity(tmp_path):
     assert everything[0]["description"] == "acwr fired"   # trusted text, not wrapped
     only_flag = tools.query_anomalies(conn, severity="flag")
     assert [a["metric"] for a in only_flag] == ["acwr"]
+
+
+def _metric(d, athlete="ag", **over):
+    base = dict(local_date=date.fromisoformat(d), athlete_id=athlete,
+                acute_load_7d=420.0, acwr=1.1, rest_day=False)
+    base.update(over)
+    return DailyMetrics(**base)
+
+
+def test_get_daily_metrics_filters_to_inclusive_date_range(tmp_path):
+    conn = _conn(tmp_path)
+    db.upsert_metrics(conn, [
+        _metric("2026-05-31"), _metric("2026-06-01"), _metric("2026-06-02"),
+        _metric("2026-06-03"),
+    ])
+    got = tools.get_daily_metrics(
+        conn, athlete_id="ag", date_start="2026-06-01", date_end="2026-06-02"
+    )
+    assert [m["local_date"] for m in got] == ["2026-06-01", "2026-06-02"]
+    assert got[0]["acute_load_7d"] == 420.0
+
+
+def test_get_daily_metrics_scopes_to_athlete(tmp_path):
+    conn = _conn(tmp_path)
+    db.upsert_metrics(conn, [_metric("2026-06-01", athlete="ag"),
+                             _metric("2026-06-01", athlete="basil")])
+    got = tools.get_daily_metrics(
+        conn, athlete_id="basil", date_start="2026-06-01", date_end="2026-06-01"
+    )
+    assert [m["athlete_id"] for m in got] == ["basil"]

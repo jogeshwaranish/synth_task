@@ -88,3 +88,14 @@ def query_anomalies(conn, *, severity: str | None = None) -> list[dict]:
     if severity is not None:
         rows = [a for a in rows if a.severity.value == severity]
     return [a.model_dump(mode="json") for a in rows]
+
+
+def get_daily_metrics(
+    conn, athlete_id: str, *, date_start: str, date_end: str
+) -> list[dict]:
+    lo, hi = date.fromisoformat(date_start), date.fromisoformat(date_end)
+    return [
+        m.model_dump(mode="json")
+        for m in db.get_metrics(conn, athlete_id=athlete_id)
+        if lo <= m.local_date <= hi
+    ]
