@@ -186,3 +186,22 @@ history, per the spec's detector catalog. The non-obvious calls:
   exhausted loop -> `InsightRejected` (reject + log, never propagate).
 - CLI `report` wiring and the FastAPI surface are a separate follow-on; this
   plan delivers `run_synthesis()` as the callable seam.
+
+## Serving layer: one generate_report seam behind both the CLI and the API
+`synth report` and FastAPI `/insights` are thin wrappers over
+`synthesize/report.generate_report()`, which resolves the target and calls
+`run_synthesis`. The non-obvious calls:
+- **Target resolved from data, not config.** `resolve_target` defaults the
+  athlete to whoever has the most `daily_metrics` rows and the period to that
+  athlete's full span, so `synth report` with no flags works against whatever
+  was ingested (workbook `ag` vs Strava `basil`). Flags override; no metrics ->
+  ValueError -> clean CLI message / HTTP 404.
+- **CLI keeps stdout pure JSON:** the report prints to stdout, the redacted
+  config + status to stderr, so `synth report | jq` works.
+- **API is fail-closed:** `/insights` maps missing data -> 404 and a rejected
+  model output -> 502 with a generic detail, never echoing the rejected payload
+  (which could carry injected/PII content). `/sync` mirrors the CLI's
+  source-skipping; `/health` is static.
+- Endpoints/commands import the wrapped functions by name so tests monkeypatch
+  them and never touch the network — the agent's injected-client seam keeps the
+  whole serving layer offline-testable.
