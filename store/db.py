@@ -16,7 +16,9 @@ import base64
 import sqlite3
 from pathlib import Path
 
-from schemas import Activity, BikeSplit, RunSplit, SwimSplit, WellnessDay
+from schemas import (
+    Activity, Anomaly, BikeSplit, DailyMetrics, RunSplit, SwimSplit, WellnessDay,
+)
 from security import crypto
 
 # Field order is the single source of truth for both the table and the binds.
@@ -155,6 +157,46 @@ CREATE TABLE IF NOT EXISTS swim_split (
 """
 
 
+# Derived analyze grain. All values are code-computed numerics/enums — the
+# description is authored by OUR code (trusted, see schemas.Anomaly) — so no
+# encrypted columns here; everything stays queryable.
+METRICS_COLUMNS: tuple[str, ...] = (
+    "athlete_id", "local_date", "acute_load_7d", "chronic_load_28d", "acwr",
+    "load_zscore_28d", "pace_trend_pct_14d", "hr_at_pace_trend_pct_14d",
+    "rest_day",
+)
+ANOMALY_COLUMNS: tuple[str, ...] = (
+    "anomaly_id", "local_date", "metric", "value", "baseline", "zscore",
+    "severity", "description",
+)
+
+_ANALYZE_DDL = """
+CREATE TABLE IF NOT EXISTS daily_metrics (
+    athlete_id               TEXT NOT NULL,
+    local_date               TEXT NOT NULL,
+    acute_load_7d            REAL,
+    chronic_load_28d         REAL,
+    acwr                     REAL,
+    load_zscore_28d          REAL,
+    pace_trend_pct_14d       REAL,
+    hr_at_pace_trend_pct_14d REAL,
+    rest_day                 INTEGER NOT NULL,
+    PRIMARY KEY (athlete_id, local_date)
+);
+CREATE TABLE IF NOT EXISTS anomaly (
+    anomaly_id   TEXT PRIMARY KEY,
+    local_date   TEXT NOT NULL,
+    metric       TEXT NOT NULL,
+    value        REAL NOT NULL,
+    baseline     REAL,
+    zscore       REAL,
+    severity     TEXT NOT NULL,
+    description  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_anomaly_date ON anomaly (local_date);
+"""
+
+
 def connect(path: str | Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(path))
     conn.row_factory = sqlite3.Row
@@ -164,7 +206,7 @@ def connect(path: str | Path) -> sqlite3.Connection:
 
 def init_db(conn: sqlite3.Connection) -> None:
     # executescript() issues an implicit COMMIT; do not call mid-transaction.
-    conn.executescript(_ACTIVITY_DDL + _WELLNESS_DDL + _SPLITS_DDL)
+    conn.executescript(_ACTIVITY_DDL + _WELLNESS_DDL + _SPLITS_DDL + _ANALYZE_DDL)
 
 
 def _encrypt_field(value: str | None, key: bytes) -> str | None:
@@ -345,3 +387,58 @@ def get_swim_splits(
 ) -> list[SwimSplit]:
     return _get_splits(conn, "swim_split", SwimSplit, activity_id=activity_id,
                        key=key, encrypted=ENCRYPTED_SWIM_SPLIT_COLUMNS)
+
+
+# --- derived analyze grain (daily_metrics, anomaly) --------------------------
+
+def upsert_metrics(conn: sqlite3.Connection, metrics: list[DailyMetrics]) -> int:
+    cols = ", ".join(METRICS_COLUMNS)
+    placeholders = ", ".join("?" for _ in METRICS_COLUMNS)
+    updates = ", ".join(
+        f"{c}=excluded.{c}" for c in METRICS_COLUMNS
+        if c not in ("athlete_id", "local_date")
+    )
+    sql = (
+        f"INSERT INTO daily_metrics ({cols}) VALUES ({placeholders}) "
+        f"ON CONFLICT(athlete_id, local_date) DO UPDATE SET {updates}"
+    )
+    rows = [tuple(m.model_dump(mode="json")[c] for c in METRICS_COLUMNS)
+            for m in metrics]
+    with conn:  # security: all values parameterized; no f-string values
+        conn.executemany(sql, rows)
+    return len(rows)
+
+
+def get_metrics(
+    conn: sqlite3.Connection, athlete_id: str | None = None
+) -> list[DailyMetrics]:
+    if athlete_id is None:
+        cur = conn.execute("SELECT * FROM daily_metrics ORDER BY athlete_id, local_date")
+    else:
+        cur = conn.execute(
+            "SELECT * FROM daily_metrics WHERE athlete_id = ? ORDER BY local_date",
+            (athlete_id,),
+        )
+    return [DailyMetrics.model_validate(dict(r)) for r in cur.fetchall()]
+
+
+def upsert_anomalies(conn: sqlite3.Connection, anomalies: list[Anomaly]) -> int:
+    cols = ", ".join(ANOMALY_COLUMNS)
+    placeholders = ", ".join("?" for _ in ANOMALY_COLUMNS)
+    updates = ", ".join(
+        f"{c}=excluded.{c}" for c in ANOMALY_COLUMNS if c != "anomaly_id"
+    )
+    sql = (
+        f"INSERT INTO anomaly ({cols}) VALUES ({placeholders}) "
+        f"ON CONFLICT(anomaly_id) DO UPDATE SET {updates}"
+    )
+    rows = [tuple(a.model_dump(mode="json")[c] for c in ANOMALY_COLUMNS)
+            for a in anomalies]
+    with conn:  # security: all values parameterized; no f-string values
+        conn.executemany(sql, rows)
+    return len(rows)
+
+
+def get_anomalies(conn: sqlite3.Connection) -> list[Anomaly]:
+    cur = conn.execute("SELECT * FROM anomaly ORDER BY local_date, anomaly_id")
+    return [Anomaly.model_validate(dict(r)) for r in cur.fetchall()]
