@@ -75,3 +75,34 @@ def test_athletes_are_windowed_independently():
     by = {(m.athlete_id, m.local_date): m for m in ms}
     assert by[("ag", date(2026, 5, 7))].acute_load_7d == 420
     assert by[("basil", date(2026, 5, 7))].acute_load_7d == 210
+
+
+def test_pace_trend_recent_7d_vs_prior_7d_positive_means_slowing():
+    rows = _streak(days=7, minutes=60, pace=10.0) + \
+           _streak(start="2026-05-08", days=7, minutes=60, pace=11.0)
+    ms = compute_metrics(rows)
+    assert ms[12].pace_trend_pct_14d is None     # window incomplete
+    assert ms[13].pace_trend_pct_14d == 10.0     # (11 - 10) / 10 * 100
+
+
+def test_pace_trend_none_when_a_half_has_too_few_run_days():
+    # prior half has a single paced day (< MIN_TREND_DAYS_PER_HALF)
+    rows = [_day("2026-05-01", 60, pace=10.0)] + \
+           _streak(start="2026-05-02", days=6, minutes=60) + \
+           _streak(start="2026-05-08", days=7, minutes=60, pace=11.0)
+    assert compute_metrics(rows)[13].pace_trend_pct_14d is None
+
+
+def test_hr_at_pace_trend_uses_beats_per_mile():
+    # beats/mi: prior 140*10=1400, recent 147*10=1470 -> +5%
+    rows = _streak(days=7, minutes=60, pace=10.0, hr=140.0) + \
+           _streak(start="2026-05-08", days=7, minutes=60, pace=10.0, hr=147.0)
+    m = compute_metrics(rows)[13]
+    assert round(m.hr_at_pace_trend_pct_14d, 6) == 5.0
+    assert m.pace_trend_pct_14d == 0.0           # pace itself is steady
+
+
+def test_hr_at_pace_needs_both_hr_and_pace():
+    rows = _streak(days=7, minutes=60, pace=10.0) + \
+           _streak(start="2026-05-08", days=7, minutes=60, pace=10.0, hr=150.0)
+    assert compute_metrics(rows)[13].hr_at_pace_trend_pct_14d is None

@@ -36,6 +36,20 @@ def _std(xs: list[float]) -> float:
     return (sum((x - m) ** 2 for x in xs) / len(xs)) ** 0.5  # population std
 
 
+def _half_mean(values: list[float | None], min_n: int) -> float | None:
+    present = [v for v in values if v is not None]
+    return _mean(present) if len(present) >= min_n else None
+
+
+def _trend_pct(series14: list[float | None]) -> float | None:
+    """Recent 7 calendar days vs the prior 7. Positive = value rising."""
+    prior = _half_mean(series14[:7], MIN_TREND_DAYS_PER_HALF)
+    recent = _half_mean(series14[7:], MIN_TREND_DAYS_PER_HALF)
+    if prior is None or recent is None or prior == 0:
+        return None
+    return (recent - prior) / prior * 100
+
+
 def compute_metrics(daily_rows: list[DailyRow]) -> list[DailyMetrics]:
     by_athlete: dict[str, dict[date, DailyRow]] = defaultdict(dict)
     for r in daily_rows:
@@ -47,6 +61,15 @@ def compute_metrics(daily_rows: list[DailyRow]) -> list[DailyMetrics]:
         first, last = min(rows), max(rows)
         days = [first + timedelta(days=i) for i in range((last - first).days + 1)]
         minutes = [rows[d].training_minutes if d in rows else 0.0 for d in days]
+        pace = [rows[d].avg_pace_run_min_per_mi if d in rows else None for d in days]
+        # HR-at-pace proxy: beats per mile (avg_hr [beats/min] * pace [min/mi]).
+        beats_per_mi = [
+            rows[d].avg_hr * rows[d].avg_pace_run_min_per_mi
+            if d in rows and rows[d].avg_hr is not None
+            and rows[d].avg_pace_run_min_per_mi is not None
+            else None
+            for d in days
+        ]
 
         for i, d in enumerate(days):
             acute = sum(minutes[i - 6:i + 1]) if i >= 6 else None
@@ -65,6 +88,12 @@ def compute_metrics(daily_rows: list[DailyRow]) -> list[DailyMetrics]:
                 chronic_load_28d=chronic,
                 acwr=acwr,
                 load_zscore_28d=zscore,
+                pace_trend_pct_14d=(
+                    _trend_pct(pace[i - 13:i + 1]) if i >= 13 else None
+                ),
+                hr_at_pace_trend_pct_14d=(
+                    _trend_pct(beats_per_mi[i - 13:i + 1]) if i >= 13 else None
+                ),
                 rest_day=minutes[i] == 0,
             ))
     return out
