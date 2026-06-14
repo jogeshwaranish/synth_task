@@ -84,4 +84,28 @@ same athlete (`one athlete, two sources`):
 `report` prints the readable briefing; add `--format json` for the raw contract
 object. The first rowing run calls the LLM once to infer the layout, then caches it.
 
+## All athletes at once (committed demo DB)
+
+AG's rowing workbook holds ~50 athletes. To show how the SAME system surfaces a
+**different pattern per athlete**, `scripts/multi_athlete.py` runs the unchanged
+pipeline across the whole roster: it ingests each athlete's real erg sessions,
+then plants a **lean** slice of simulated Strava shaped by that athlete's own erg
+trajectory — an LLM reads the trend and emits a small validated pattern config
+(adapting / plateau / overreaching), which deterministic code expands into daily
+training + wellness. (No app code is modified; see `DECISIONS.md`.)
+
+The build is committed as **`athletes_test.db`** (synthetic Strava + real erg,
+stored plaintext so it's portable), so you can test **without any Strava API or
+sheet re-ingest** — just report on any athlete:
+
+    # Already built & committed; or rebuild (needs ANTHROPIC_API_KEY + the workbook):
+    uv run python scripts/gen_all_athletes.py athletes_test.db
+
+    # Contrast two athletes — clean adaptation vs non-functional overreaching:
+    SYNTH_DB_PATH=athletes_test.db uv run synth report --athlete barrancotto-eve
+    SYNTH_DB_PATH=athletes_test.db uv run synth report --athlete miller-star
+
+The build prints a per-athlete table (pattern category, erg/sim counts, erg vs
+training anomaly counts) so the spread is visible at a glance.
+
 See `docs/superpowers/specs/` for the design and `DECISIONS.md` for tradeoffs.

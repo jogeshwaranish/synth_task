@@ -164,6 +164,13 @@ class RowingRoster:
             by_last.setdefault(ln, []).append((fn, cid))
         return RowingRoster(_by_last=by_last)
 
+    def all_athletes(self) -> list[str]:
+        """Every canonical athlete id on the roster, sorted + de-duplicated.
+        Read-only convenience for the multi-athlete harness (no behaviour change
+        to the single-athlete ingest path)."""
+        return sorted({cid for entries in self._by_last.values()
+                       for _, cid in entries})
+
     def resolve(self, raw_name: str | None) -> str | None:
         """Map a session-tab name ('Last, First', possibly dirty) to a roster
         canonical_id, or None if it is not a single known athlete."""

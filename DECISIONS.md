@@ -316,3 +316,40 @@ stay inside the LOCKED contract:
   by default; `--format json` keeps the machine deliverable for pipelines. The
   renderer consumes the already-validated report, so it inherits the same
   guarantees (no forged harness fields, no secrets, untrusted text neutralised).
+
+## Whole-roster trends: per-athlete LLM-planted Strava, one committed test DB
+AG's follow-up — "extract individual athlete trends … find different patterns for
+each athlete" — runs the SAME pipeline across every rostered athlete instead of
+one. We have real erg results per athlete but no Strava for them, so the harness
+`scripts/multi_athlete.py` generates a LEAN slice of fake Strava per athlete whose
+shape is planted FROM that athlete's own erg trajectory. Decisions:
+- The app core is UNCHANGED — no edits to `cli.py`/`app.py`/agent/`metrics.py`.
+  The harness drives `ingest/rowing`, `normalize/join`, `analyze/*`, `store/db`.
+  The only app-module touch is an additive read-only `RowingRoster.all_athletes()`.
+- `classify_trend` reads each athlete's most-tested erg piece family (2x6k, 7
+  tests) over the FULL season -> adapting / plateau / overreaching.
+- Pattern is PLANTED BY AN LLM, reusing the repo's "LLM as config compiler"
+  stance (cf. `ingest/mapping.py`): the model sees ONLY the computed trend numbers
+  (no names, no untrusted free text) and emits a small `PatternConfig` (window,
+  overload onset, severity). `validate_pattern` bounds-checks it (lean 7-14wk
+  window, physiological caps, no overload for adapting); invalid -> reject+log and
+  fall back to a deterministic `default_pattern`, so one bad response can't abort a
+  47-athlete build. Deterministic `simulate` then EXPANDS the validated config
+  into daily rows (RNG only adds per-athlete jitter). The LLM narrative is never
+  written to the DB. Configs cached encrypted per trend-fingerprint in `.tokens/`.
+- LEAN, not full-season: each athlete gets ~7-14 weeks of Strava (enough for a 28d
+  chronic baseline + an overload block to register), and we ingest only the erg
+  tests INSIDE that window. Mixing far-back autumn erg tests with a short recent
+  Strava block left a near-empty chronic baseline that spiked ACWR for everyone
+  and masked the planted per-athlete differences — restricting to the window fixed
+  it (clean separation: adapting ~0-5 training anomalies, plateau ~20-30,
+  overreaching ~26-42).
+- The combined `athletes_test.db` is COMMITTED so AG can run `synth report
+  --athlete <id>` with no Strava API and no sheet re-ingest. It is written
+  PLAINTEXT (`key=None`) on purpose: the at-rest encryption key is per-machine
+  (see [[encryption-key-preference]] / `security/crypto.py`), so an encrypted DB
+  couldn't be opened on another checkout. The data is synthetic Strava + real erg
+  names already authorized for commit; production `synth sync` still passes a real
+  `key=` and encrypts. `.gitignore` un-ignores both real workbooks and this one DB
+  via explicit `!` exceptions — AG authorized committing the two workbooks, which
+  reverses the earlier repo-privacy default for these two files only.
