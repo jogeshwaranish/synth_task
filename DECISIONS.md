@@ -216,3 +216,48 @@ shape (prompt now lists every contract field + enum; a test asserts the prompt
 covers `Pattern.model_fields`). Lesson: validate_insight's fail-closed rejection
 worked exactly as designed — but agent UX needs at least one real-model run, not
 just scripted fakes.
+
+## Strava + sheet are ONE athlete, two sources (not two athletes)
+Earlier the pipeline stamped Strava under `strava_athlete_id` ("anish") and the
+sheet under a hard-coded "ag", treating them as two athletes kept distinct by
+`athlete_id`. That was wrong: the product's whole point is fusing ONE athlete's
+training (Strava) and recovery/wellness (sheet) into a single picture. With split
+ids the daily join (`(athlete_id, local_date)`) never fused, so a report saw only
+one silo (Strava activities with `n_wellness_days=0`, or sheet data alone). Fix:
+both ingest paths stamp the same `athlete_id` (Strava's configured id);
+provenance still lives on the `source` axis (STRAVA_API vs SHEET) and survives to
+synthesis via `DailyRow.source_mix`, so nothing is lost by sharing the id.
+Existing split-id rows are reproducible, so they get remapped/re-synced rather
+than migrated carefully.
+
+## Synthesis voice: physiology-literate coach, insight over summary, evidence last
+The synthesis system prompt was a neutral "analyst" that produced exhaustive,
+jargon-heavy recaps (ACWR, aerobic decoupling, z-scores) the athlete couldn't
+read. Reframed it to reason like an endurance coach/exercise physiologist for ONE
+athlete: surface only the few patterns that change how they train/recover (2-4,
+not a full enumeration), distinguish real signal from statistical artifact (e.g.
+cold-start ratio spikes off a near-zero base), and speak in plain athlete language
+— lead with the takeaway and what to do, cite the numbers/metric-names as
+supporting EVIDENCE at the end (technical names live in `metrics_involved`). The
+locked output schema is unchanged; this is prompt/voice only, so validate_insight
+and the contract still hold.
+
+## Synthetic Strava test harness for non-obvious-insight validation
+Anish's real Strava history is too sparse to exercise the synthesis agent, so
+`scripts/gen_test_strava.py` generates a deterministic (seed=42) synthetic
+athlete — ~5 months (Dec 2025-May 2026) of run/bike/swim activities + daily
+wellness — into a SEPARATE `synth_test.db` (via `SYNTH_DB_PATH`), never touching
+the real `synth.db`. Value ranges are calibrated from the real workbook
+(`activities_raw`). It plants three deliberately NON-OBVIOUS patterns, each
+tuned to `analyze/metrics.py` thresholds, to test whether the coach-agent
+surfaces what no single day reveals:
+- (A) masked aerobic decoupling — run pace held flat while HR creeps up, so
+  HR-at-pace drifts up with NO single anomaly firing (ACWR stays ~1.05);
+- (B) recovery markers lead — HRV-suppressed / RHR-elevated anomalies fire ~2
+  weeks BEFORE the HR-at-pace drift, discoverable only by fusing both sources;
+- (C) the ACWR paradox — the low-ACWR April week (detraining "watch") is the
+  HEALTHY recovery, while the normal-looking ACWR hid the March overreach.
+Validated 2026-06-13: the agent found all three (plus correctly inferred the
+root cause — a 10+ week build with no deload — and dismissed the planted
+noise). The `.db` artifact stays gitignored (`*.db`); only the generator is
+tracked so the fixture is reproducible, not committed as data.
