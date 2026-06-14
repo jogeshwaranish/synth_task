@@ -5,6 +5,31 @@ normalizes into the v1.0 contract (`schemas.py`), stores in SQLite at two grains
 computes training-load metrics + anomalies, and runs an Anthropic agent that
 emits a `SynthesisReport` — printed as a human-readable coaching briefing.
 
+> **Just want to see results?** A full multi-athlete dataset is already committed.
+> Skip straight to [Quickest test](#quickest-test-everything-is-committed) — no
+> Strava, no spreadsheet, no data generation needed.
+
+## Project layout
+
+Flat top-level packages (the contract refers to bare paths like
+`analyze/metrics.py`). Data flows left→right: **ingest → normalize → store →
+analyze → synthesize**.
+
+| Path | What lives here |
+|---|---|
+| `schemas.py` | **Locked v1.0 contract** — every Pydantic model that crosses the pipeline (`Activity`, `WellnessDay`, `DailyRow`, `DailyMetrics`, `Anomaly`, `SynthesisReport`). `CONTRACT.md` documents it. |
+| `config.py` | `Settings` (env/`.env`): Strava creds, Anthropic model/key, DB + token paths. `safe_summary()` redacts secrets. |
+| `ingest/` | Source adapters → contract `Activity`/`WellnessDay`. `strava.py` (API + OAuth), `sheet.py` (triathlon workbook + layout routing), `mapping.py` (LLM column-mapper for odd wellness sheets), `rowing.py` (AI-fallback ingest for the pivoted multi-athlete erg workbook + roster identity). |
+| `normalize/` | `join.py` — fuses activities + wellness into one `DailyRow` per athlete-day. |
+| `store/` | `db.py` — stdlib `sqlite3`, `?`-bound; field-level AES-256-GCM encryption of untrusted/PII columns at rest. |
+| `analyze/` | `metrics.py` (rolling load, ACWR, z-scores, pace/HR-at-pace trends + anomaly detectors), `rowing.py` (additive per-500m erg split-trend detector). |
+| `synthesize/` | The agent. `agent.py` (tool loop), `tools.py` (4 read-only DB tools), `prompts.py` (`wrap_untrusted` injection fence), `validate.py` (`validate_insight` — schema-checks LLM output, fail-closed), `report.py` (resolve target + drive agent), `render.py` (report → Markdown briefing). |
+| `security/` | `crypto.py` — AES-256-GCM + per-machine key (`.tokens/synth.key`, 0600). |
+| `cli.py` / `app.py` | `synth sync\|analyze\|report` CLI · FastAPI (`/health`, `/sync`, `/insights`). |
+| `scripts/` | Throwaway test harnesses (NOT shipped): `gen_test_strava.py`, `gen_rowing_test.py`, and the whole-roster `multi_athlete.py` + `gen_all_athletes.py`. |
+| `tests/` | `uv run pytest -q` — offline against fixtures, never the network. |
+| `*.md` | `CONTRACT.md` (interface), `DECISIONS.md` (one paragraph per tradeoff), `CLAUDE.md` (repo conventions). |
+
 ## Setup
     uv venv --python 3.12 && uv pip install -e ".[dev]"
     cp .env.example .env   # fill in STRAVA_CLIENT_ID / STRAVA_CLIENT_SECRET
@@ -84,28 +109,45 @@ same athlete (`one athlete, two sources`):
 `report` prints the readable briefing; add `--format json` for the raw contract
 object. The first rowing run calls the LLM once to infer the layout, then caches it.
 
-## All athletes at once (committed demo DB)
+## Quickest test (everything is committed)
 
-AG's rowing workbook holds ~50 athletes. To show how the SAME system surfaces a
+A full **47-athlete dataset is already committed as `athletes_test.db`** — real
+erg results + per-athlete simulated Strava + wellness, with `analyze` already run
+and stored. **Nothing to generate, no Strava, no spreadsheet.** The *only* thing a
+report needs is `ANTHROPIC_API_KEY` in `.env` (the agent that writes the briefing
+is a live LLM call):
+
+    # 1. one-time setup
+    uv venv --python 3.12 && uv pip install -e ".[dev]"
+    cp .env.example .env          # set ANTHROPIC_API_KEY (Strava/Sheets NOT needed)
+
+    # 2. report on ANY athlete — contrast the three patterns the system finds:
+    SYNTH_DB_PATH=athletes_test.db uv run synth report --athlete cox-madeline     # adapting: clean, keep loading
+    SYNTH_DB_PATH=athletes_test.db uv run synth report --athlete bonnem-lily      # plateau: erg stalled + recovery drift
+    SYNTH_DB_PATH=athletes_test.db uv run synth report --athlete bosio-giulia     # overreaching: back off now
+
+    # list every athlete id in the committed DB:
+    sqlite3 athletes_test.db "SELECT DISTINCT athlete_id FROM activity ORDER BY 1;"
+
+Add `--format json` for the raw contract object. You do **not** need to run `sync`
+or `analyze` against this DB — both are already baked in.
+
+### How the committed data was made (rebuild only if you want to change it)
+
+AG's rowing workbook holds ~50 athletes. To show the SAME system surfacing a
 **different pattern per athlete**, `scripts/multi_athlete.py` runs the unchanged
 pipeline across the whole roster: it ingests each athlete's real erg sessions,
 then plants a **lean** slice of simulated Strava shaped by that athlete's own erg
-trajectory — an LLM reads the trend and emits a small validated pattern config
+trajectory — an LLM reads the trend and emits a small *validated* pattern config
 (adapting / plateau / overreaching), which deterministic code expands into daily
 training + wellness. (No app code is modified; see `DECISIONS.md`.)
 
-The build is committed as **`athletes_test.db`** (synthetic Strava + real erg,
-stored plaintext so it's portable), so you can test **without any Strava API or
-sheet re-ingest** — just report on any athlete:
+`athletes_test.db` is stored plaintext so it's portable across machines (the
+at-rest key is per-machine). Rebuilding needs `ANTHROPIC_API_KEY` + the workbook:
 
-    # Already built & committed; or rebuild (needs ANTHROPIC_API_KEY + the workbook):
     uv run python scripts/gen_all_athletes.py athletes_test.db
 
-    # Contrast two athletes — clean adaptation vs non-functional overreaching:
-    SYNTH_DB_PATH=athletes_test.db uv run synth report --athlete barrancotto-eve
-    SYNTH_DB_PATH=athletes_test.db uv run synth report --athlete miller-star
-
-The build prints a per-athlete table (pattern category, erg/sim counts, erg vs
-training anomaly counts) so the spread is visible at a glance.
+It prints a per-athlete table (pattern category, erg/sim counts, erg vs training
+anomaly counts) so the spread is visible at a glance.
 
 See `docs/superpowers/specs/` for the design and `DECISIONS.md` for tradeoffs.
