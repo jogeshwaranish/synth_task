@@ -261,3 +261,58 @@ Validated 2026-06-13: the agent found all three (plus correctly inferred the
 root cause — a 10+ week build with no deload — and dismissed the planted
 noise). The `.db` artifact stays gitignored (`*.db`); only the generator is
 tracked so the fixture is reproducible, not committed as data.
+
+## Flexible AI-fallback ingest for a dissimilar, multi-athlete workbook
+AG supplied a second real workbook (`rowing_women_2025-2026 ERGS-2.xlsx`) shaped
+NOTHING like our triathlon export — it is PIVOTED: one tab per erg TEST SESSION
+(date encoded in the tab name, e.g. `316 2k` = Mar 16), each ROW a different
+athlete (~40 women), with column layouts drifting tab to tab and no wellness
+data at all. AG's ask: ingest it, isolate ONE athlete, simulate Strava, and see
+if the agent finds patterns. Two new data-pipeline capabilities, both built to
+stay inside the LOCKED contract:
+- `ingest/rowing.py` — the general-schema sibling of `ingest/mapping.py`. An LLM
+  infers a mapping CONFIG once per workbook shape (roster tab, name column,
+  ranked per-field header candidates for split/rate/watts), validated before
+  use and cached encrypted by header fingerprint (`.tokens/rowing_mapping.enc`,
+  0600). Deterministic code then parses tab-name dates, piece geometry
+  (`2x6k`->12000 m, `3x12`->2160 s), and maps each erg piece to a `Sport.OTHER`
+  Activity (per-500m split rides in `avg_speed_mph`; stroke rate->`avg_cadence`).
+  Only headers + sample cells go to the LLM (wrapped via `wrap_untrusted`), never
+  full row values. Live run: the LLM inferred every header variant correctly.
+- Athlete identity: `RowingRoster.resolve()` canonicalises dirty session names
+  against the roster — trailing spaces, nicknames (`Cox, Maddy`->`cox-madeline`),
+  truncated hyphenated surnames (`Wappler-N`->`Wappler-Niemeyer`) — and REFUSES
+  names not on the roster (the "is/ isn't a single athlete" requirement).
+- `analyze/rowing.py` (`detect_erg_anomalies`) — an ADDITIVE detector kept out of
+  Basil's locked `metrics.py`, wired into `cli analyze` behind a seam comment. It
+  emits standard `Anomaly` rows (the `metric` field is a free string per the
+  contract, so NO schema bump): `erg_split_regression` / `erg_split_plateau`,
+  trended WITHIN each piece family (a 2k max effort ~1:45/500m is not comparable
+  to a 6k ~1:58/500m). Generic load/ACWR/z-score already work sport-agnostically;
+  run-specific pace/HR-at-pace trends correctly stay null for erg.
+- `scripts/gen_rowing_test.py` — single harness: ingests Banks, Claire's 16 erg
+  sessions via the AI fallback AND lays down deterministic (seed=42) simulated
+  cross-training + wellness (Sep 2025-Mar 2026) into a separate `rowing_test.db`.
+  Plants a late-Jan->Mar overload (load ramp + suppressed HRV + elevated RHR)
+  that lines up with her erg plateau (no 2x6k PR after Feb 9). Validated
+  2026-06-14: the agent fused both sources and read it as non-functional
+  overreaching ("training more but no longer getting faster — digging a hole, not
+  building"), isolated the one athlete, and dismissed a planted Oct-10 noise day.
+
+## Workbook layout: explicit SHEET_KIND (auto-detect as fallback); readable report
+- The source SHAPE is an EXPLICIT setting: `SHEET_KIND=tri|rowing` (config
+  `sheet_kind`, a `Literal` so a bad value is rejected at load). It is
+  authoritative; `sync_sheet` routes on it via `_resolve_kind`. We chose explicit
+  over pure auto-detection because a header heuristic can silently misroute an
+  unseen workbook. When `SHEET_KIND` is UNSET, sync falls back to header-based
+  `ingest/sheet.py::detect_layout` (triathlon `activities_raw`-style vs pivoted
+  rowing: roster tab + name-keyed session tabs; defaults to `tri`). Rowing needs
+  `SHEET_ATHLETE_QUERY` (the roster name to isolate); its rows stamp
+  `STRAVA_ATHLETE_ID` (one athlete, two sources). So `synth sync` handles both
+  formats directly — the rowing path is no longer harness-only.
+- `synthesize/render.py` turns a validated SynthesisReport into a coach-style
+  Markdown briefing (takeaway split from `> Evidence:`/`> Worth noting:`, follow-up
+  questions, and the harness-written audit trail). `synth report` now prints this
+  by default; `--format json` keeps the machine deliverable for pipelines. The
+  renderer consumes the already-validated report, so it inherits the same
+  guarantees (no forged harness fields, no secrets, untrusted text neutralised).

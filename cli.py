@@ -7,12 +7,14 @@ import sys
 from collections import Counter
 
 from analyze.metrics import compute_metrics, detect_anomalies
+from analyze.rowing import detect_erg_anomalies
 from config import get_settings
 from ingest.sheet import sync_sheet
 from ingest.strava import sync_strava
 from normalize.join import build_daily_rows
 from security import crypto
 from store import db
+from synthesize.render import render_markdown
 from synthesize.report import generate_report
 from synthesize.validate import InsightRejected
 
@@ -56,6 +58,10 @@ def _cmd_analyze(_args: argparse.Namespace) -> int:
     daily_rows = build_daily_rows(activities, wellness)
     metrics = compute_metrics(daily_rows)
     anomalies = detect_anomalies(daily_rows, metrics)
+    # seam(Anish): additive rowing-erg split-trend detector. Emits standard
+    # Anomaly rows (free `metric` string, no schema bump); kept out of Basil's
+    # locked metrics.py. No-op unless erg (Sport.OTHER, sheet) activities exist.
+    anomalies += detect_erg_anomalies(activities)
     db.upsert_metrics(conn, metrics)
     db.upsert_anomalies(conn, anomalies)
     by_severity = Counter(a.severity.value for a in anomalies)
@@ -80,7 +86,12 @@ def _cmd_report(args: argparse.Namespace) -> int:
     except InsightRejected as e:
         print(f"report rejected: {e}", file=sys.stderr)
         return 1
-    print(report.model_dump_json(indent=2))              # the deliverable
+    # The human-readable briefing is produced every run from the validated
+    # report; --format json still emits the machine deliverable for pipelines.
+    if args.format == "json":
+        print(report.model_dump_json(indent=2))
+    else:
+        print(render_markdown(report))
     return 0
 
 
@@ -96,10 +107,13 @@ def build_parser() -> argparse.ArgumentParser:
     analyze = sub.add_parser("analyze", help="compute training-load metrics + anomalies")
     analyze.set_defaults(func=_cmd_analyze)
 
-    report = sub.add_parser("report", help="run the synthesis agent and print a SynthesisReport")
+    report = sub.add_parser("report",
+                            help="run the synthesis agent and print a readable briefing")
     report.add_argument("--athlete", default=None, help="athlete_id (default: busiest in the DB)")
     report.add_argument("--start", default=None, help="period start YYYY-MM-DD")
     report.add_argument("--end", default=None, help="period end YYYY-MM-DD")
+    report.add_argument("--format", choices=("md", "json"), default="md",
+                        help="md = human-readable briefing (default); json = machine deliverable")
     report.set_defaults(func=_cmd_report)
 
     return p

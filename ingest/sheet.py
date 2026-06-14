@@ -21,7 +21,7 @@ from openpyxl import load_workbook
 from pydantic import ValidationError
 
 from config import Settings
-from ingest import mapping
+from ingest import mapping, rowing
 from schemas import Activity, BikeSplit, RunSplit, Source, Sport, SwimSplit, WellnessDay
 from security import crypto
 from store import db
@@ -327,24 +327,82 @@ def _ingest_wellness_mapped(path: Path, s: Settings, key: bytes) -> list[Wellnes
                                    athlete_id=s.strava_athlete_id)
 
 
+# security(Anish): the sheet export is no longer assumed to be the triathlon
+# layout. We auto-detect the workbook SHAPE from its headers and route to the
+# right ingest — the triathlon `activities_raw` parser, or the pivoted
+# multi-athlete (rowing-erg) AI-fallback ingest in ingest/rowing.py.
+def detect_layout(tabs_preview: dict[str, "mapping.TabPreview"]) -> str:
+    """'tri' (our Strava-style export with an activities_raw tab) or 'rowing'
+    (pivoted: a roster tab + dated session tabs keyed by an athlete-name column).
+    Deterministic, header-based; defaults to 'tri' to preserve old behaviour."""
+    for prev in tabs_preview.values():
+        h = {c.strip().lower() for c in prev.headers}
+        if "activity_id" in h and ("sport_type" in h or "start_date_local" in h):
+            return "tri"
+    has_roster = any(
+        {"last name", "first name"} <= {c.strip().lower() for c in p.headers}
+        for p in tabs_preview.values()
+    )
+    name_keyed = sum(
+        1 for p in tabs_preview.values()
+        if p.headers and p.headers[0].strip().lower() == "name"
+    )
+    return "rowing" if (has_roster or name_keyed >= 2) else "tri"
+
+
+def _detect_layout(path: Path) -> str:
+    if path.suffix.lower() not in {".xlsx", ".xlsm"}:
+        return "tri"  # a CSV export is always the single triathlon activities tab
+    return detect_layout(_tabs_preview(path))
+
+
+def _resolve_kind(s: Settings, path: Path) -> str:
+    # Explicit SHEET_KIND is authoritative; auto-detect is only the fallback.
+    return s.sheet_kind or _detect_layout(path)
+
+
+def _sync_rowing(path: Path, s: Settings, conn, key: bytes) -> int:
+    # Pull ONE athlete out of the multi-athlete workbook (roster-validated), and
+    # stamp the same athlete_id as Strava (one athlete, two sources).
+    if not s.sheet_athlete_query:
+        raise RuntimeError(
+            "rowing workbook detected — set SHEET_ATHLETE_QUERY in .env to choose "
+            "one roster athlete (e.g. 'Banks, Claire')"
+        )
+    tabs = _tabs_preview(path)
+    acts = rowing.ingest_rowing(
+        tabs, lambda tab: _rows_from_xlsx(path, tab),
+        settings=s, key=key, athlete_query=s.sheet_athlete_query,
+        athlete_id=s.strava_athlete_id,
+    )
+    return db.upsert_activities(conn, acts, key=key)
+
+
 def sync_sheet(s: Settings, conn) -> int:
     """Ingest the configured sheet export into the store. Returns activity count.
 
-    Activities path is required (caller checks configuration); wellness path is
-    optional and an absent/empty wellness source is the documented normal case.
+    The workbook shape comes from SHEET_KIND when set (tri | rowing), otherwise
+    header-based auto-detection. Activities path is required; wellness path is
+    optional (the triathlon path only).
     """
     if s.sheet_activities_path is None:
         raise RuntimeError("Set SHEET_ACTIVITIES_PATH in .env")
     key = crypto.load_or_create_key(s.encryption_key_path)  # encrypt PII at rest
+    path = Path(s.sheet_activities_path)
+    if _resolve_kind(s, path) == "rowing":
+        return _sync_rowing(path, s, conn, key)
+
+    # --- triathlon layout (default) ---
     # Strava + sheet are ONE athlete with two sources; both stamp the same
     # athlete_id (provenance lives on the `source` axis). See DECISIONS.md.
     activities = parse_activity_rows(
-        _load_rows(Path(s.sheet_activities_path), _ACTIVITIES_TAB),
-        athlete_id=s.strava_athlete_id,
+        _load_rows(path, _ACTIVITIES_TAB), athlete_id=s.strava_athlete_id,
     )
     n = db.upsert_activities(conn, activities, key=key)
-    _sync_splits(Path(s.sheet_activities_path), conn, key)  # run/bike/swim split tabs
-    if s.sheet_wellness_path is not None and Path(s.sheet_wellness_path).exists():
+    _sync_splits(path, conn, key)  # run/bike/swim split tabs
+    # is_file() (not exists()): an unset env var coerces to Path('.'), a real
+    # directory that exists() — guard against ingesting the cwd as a "sheet".
+    if s.sheet_wellness_path is not None and Path(s.sheet_wellness_path).is_file():
         days = _ingest_wellness_mapped(Path(s.sheet_wellness_path), s, key)
         db.upsert_wellness(conn, days, key=key)
     return n
