@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -40,6 +41,14 @@ class Settings(BaseSettings):
     # --- Sheet ingest (AG's workbook or its per-tab CSV exports) ---
     sheet_activities_path: Path | None = None
     sheet_wellness_path: Path | None = None
+    # The workbook SHAPE. Set it explicitly to be unambiguous; if left unset,
+    # sync falls back to header-based auto-detection. An invalid value is
+    # rejected at load time.
+    sheet_kind: Literal["tri", "rowing"] | None = None
+    # Required for the PIVOTED multi-athlete (rowing) layout: the roster name to
+    # isolate, e.g. "Banks, Claire". Its rows are stamped with strava_athlete_id
+    # (one athlete, two sources).
+    sheet_athlete_query: str | None = None
 
     @property
     def redirect_uri(self) -> str:
@@ -75,6 +84,8 @@ class Settings(BaseSettings):
                 None if self.sheet_wellness_path is None
                 else str(self.sheet_wellness_path)
             ),
+            "sheet_kind": self.sheet_kind,
+            "sheet_athlete_query": self.sheet_athlete_query,
         }
 
 

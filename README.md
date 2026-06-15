@@ -1,164 +1,153 @@
-# synth — training & wellness synthesis backend
+# synth-task
 
-A local backend that pulls an athlete's **Strava** activities and a **Google
-Sheet** of training/wellness data, normalizes both into one locked schema,
-stores them in SQLite, computes deterministic training-load metrics and
-anomalies, and runs an **Anthropic agent** that investigates those anomalies and
-emits an evidence-cited `SynthesisReport`. CLI + a thin FastAPI surface. Local
-only, no UI.
+Local backend for the synth MVP: pulls Strava + a coach's spreadsheet,
+normalizes into the v1.0 contract (`schemas.py`), stores in SQLite at two grains,
+computes training-load metrics + anomalies, and runs an Anthropic agent that
+emits a `SynthesisReport` — printed as a human-readable coaching briefing.
 
-Built for the synth intern task (due 2026-06-15). Basil leads the agentic /
-synthesis layer; Anish leads security + the data pipeline.
+> **Just want to see results?** A full multi-athlete dataset is already committed.
+> Skip straight to [Quickest test](#quickest-test-everything-is-committed) — no
+> Strava, no spreadsheet, no data generation needed.
 
----
+## Project layout
 
-## What it does (end to end)
+Flat top-level packages (the contract refers to bare paths like
+`analyze/metrics.py`). Data flows left→right: **ingest → normalize → store →
+analyze → synthesize**.
 
-```
-Strava API ─┐
-            ├─► normalize ─► SQLite ─► metrics + anomalies ─► AI agent ─► SynthesisReport
-Google Sheet┘   (contract)   (2 grains)   (deterministic)     (4 tools)     (validated JSON)
-```
-
-1. **Ingest** — Strava activities (OAuth + paged fetch) and the sheet (activities,
-   wellness, per-activity run/bike/swim splits). The sheet's columns are mapped
-   to the contract by an LLM *once per workbook shape*, then parsed
-   deterministically.
-2. **Normalize + join** — everything becomes the v1.0 contract models
-   (`schemas.py`). A per-day join (`DailyRow`) keys on the athlete's *local*
-   date, sums volume, duration-weights intensity, and keeps rest days.
-3. **Analyze** — deterministic, no LLM: acute/chronic load, ACWR, 28-day load
-   z-score, 14-day pace and HR-at-pace trends, and anomaly detection against the
-   athlete's *own* rolling baseline.
-4. **Synthesize** — an Anthropic agent works the anomaly list using four
-   read-only tools (`query_anomalies`, `get_daily_metrics`,
-   `get_activity_detail`, `compare_periods`), explains each with evidence, and
-   emits a `SynthesisReport`.
-
-## Design decision: LLM + heuristics (not a custom ML model)
-
-We chose **option 1 — an LLM with heuristics**. The reasoning:
-
-- **The data is small and personal.** One athlete with ~months of history is far
-  too little to train a trustworthy ML model; any model would overfit and we
-  couldn't explain its outputs to a coach.
-- **The valuable math is deterministic.** Training load, ACWR, z-scores, and
-  trends are well-established sports-science formulas. Computing them in plain,
-  tested code makes every number reproducible and auditable — no model needed.
-- **The LLM adds what code can't: investigation and narrative.** We use it as an
-  *agent over the deterministic outputs* — it forms hypotheses, drills into
-  specific activities/splits, compares training blocks, and writes a
-  coach-readable explanation where **every claim traces to a real tool call**.
-- **Trust boundary.** The deterministic layer is the source of truth; the LLM
-  never invents numbers. Its output is validated against the contract schema and
-  rejected if off-contract, and the evidence trace is written by our harness, not
-  the model — so a hijacked model can't fake what it looked at.
-
-Full rationale and every other tradeoff is in `DECISIONS.md`.
-
-## Security (owner: Anish)
-
-End-to-end, documented in `DECISIONS.md`:
-
-- **At rest:** AES-256-GCM field-level encryption of all PII / free-text columns
-  (activity names, devices, wellness notes, swim stroke) and the Strava token
-  cache, with a per-machine auto-generated key (never committed). Legacy
-  plaintext token caches are migrated on first read.
-- **Secrets:** live only in `.env` (gitignored); never logged — only the
-  redacted `Settings.safe_summary()` is ever printed.
-- **Prompt injection:** every piece of untrusted free text is wrapped in a
-  unique-nonce fence as inert DATA before it reaches a prompt (`wrap_untrusted`).
-- **LLM output:** validated against `insight_schema.json`; off-contract output is
-  rejected and logged, never propagated. Harness-owned fields (the evidence
-  trace, report identity) are stripped from model output and supplied
-  authoritatively.
-- **SQL:** every value is bound with `?` — no string-formatted SQL anywhere.
+| Path | What lives here |
+|---|---|
+| `schemas.py` | **Locked v1.0 contract** — every Pydantic model that crosses the pipeline (`Activity`, `WellnessDay`, `DailyRow`, `DailyMetrics`, `Anomaly`, `SynthesisReport`). `CONTRACT.md` documents it. |
+| `config.py` | `Settings` (env/`.env`): Strava creds, Anthropic model/key, DB + token paths. `safe_summary()` redacts secrets. |
+| `ingest/` | Source adapters → contract `Activity`/`WellnessDay`. `strava.py` (API + OAuth), `sheet.py` (triathlon workbook + layout routing), `mapping.py` (LLM column-mapper for odd wellness sheets), `rowing.py` (AI-fallback ingest for the pivoted multi-athlete erg workbook + roster identity). |
+| `normalize/` | `join.py` — fuses activities + wellness into one `DailyRow` per athlete-day. |
+| `store/` | `db.py` — stdlib `sqlite3`, `?`-bound; field-level AES-256-GCM encryption of untrusted/PII columns at rest. |
+| `analyze/` | `metrics.py` (rolling load, ACWR, z-scores, pace/HR-at-pace trends + anomaly detectors), `rowing.py` (additive per-500m erg split-trend detector). |
+| `synthesize/` | The agent. `agent.py` (tool loop), `tools.py` (4 read-only DB tools), `prompts.py` (`wrap_untrusted` injection fence), `validate.py` (`validate_insight` — schema-checks LLM output, fail-closed), `report.py` (resolve target + drive agent), `render.py` (report → Markdown briefing). |
+| `security/` | `crypto.py` — AES-256-GCM + per-machine key (`.tokens/synth.key`, 0600). |
+| `cli.py` / `app.py` | `synth sync\|analyze\|report` CLI · FastAPI (`/health`, `/sync`, `/insights`). |
+| `scripts/` | Throwaway test harnesses (NOT shipped): `gen_test_strava.py`, `gen_rowing_test.py`, and the whole-roster `multi_athlete.py` + `gen_all_athletes.py`. |
+| `tests/` | `uv run pytest -q` — offline against fixtures, never the network. |
+| `*.md` | `CONTRACT.md` (interface), `DECISIONS.md` (one paragraph per tradeoff), `CLAUDE.md` (repo conventions). |
 
 ## Setup
+    uv venv --python 3.12 && uv pip install -e ".[dev]"
+    cp .env.example .env   # fill in STRAVA_CLIENT_ID / STRAVA_CLIENT_SECRET
 
-```bash
-uv venv --python 3.12 && uv pip install -e ".[dev]"
-cp .env.example .env        # fill in credentials (see below)
-```
+### ⚠️ Before `sync`: tell it which spreadsheet you have
 
-Minimum to run synthesis: set `ANTHROPIC_API_KEY` in `.env`. To ingest the
-sheet, set `SHEET_ACTIVITIES_PATH` (the `.xlsx` workbook or a per-tab CSV
-export). To ingest Strava, set `STRAVA_CLIENT_ID` / `STRAVA_CLIENT_SECRET`.
+Set `SHEET_KIND` in `.env` so sync routes to the right ingest. **Always set it
+explicitly** — leaving it unset falls back to a header heuristic that can guess
+wrong on an unfamiliar workbook.
 
-## Running it
+    # Triathlon workbook (Strava-style activities_raw tab):
+    SHEET_ACTIVITIES_PATH=path/to/triathlon.xlsx
+    SHEET_KIND=tri
 
-```bash
-# 1. pull configured sources into synth.db (skips any source not configured)
-SHEET_ACTIVITIES_PATH="Copy of Triathlon Training Sync.xlsx" uv run synth sync
+    # Rowing-erg workbook (pivoted, many athletes — must also pick ONE):
+    SHEET_ACTIVITIES_PATH=path/to/rowing.xlsx
+    SHEET_KIND=rowing
+    SHEET_ATHLETE_QUERY=Banks, Claire     # roster name to isolate
+    STRAVA_ATHLETE_ID=banks_claire        # id its rows are stamped with
 
-# 2. compute metrics + anomalies
-uv run synth analyze
+## Usage
+    uv run synth sync       # pull Strava + the configured sheet into synth.db
+    uv run synth analyze    # compute metrics + anomalies
+    uv run synth report     # run the synthesis agent -> readable briefing
+    uv run synth report --format json   # same report as the machine deliverable
 
-# 3. run the AI synthesis and print the report  (calls the Anthropic API)
-uv run synth report --athlete ag
-uv run synth report --athlete ag | jq '.summary, .patterns[].title'
-```
+## Data sources
 
-Or via the API:
+The athlete's training (Strava) and the coach's spreadsheet are fused into **one
+athlete, two sources** — both stamp the same `athlete_id`; provenance lives on
+the `source` axis. Point `SHEET_ACTIVITIES_PATH` at a workbook (`.xlsx`) or a
+per-tab CSV export.
 
-```bash
-uv run uvicorn app:app --port 8000
-curl localhost:8000/health
-curl -X POST localhost:8000/sync
-curl "localhost:8000/insights?athlete=ag"     # calls the Anthropic API
-# interactive docs at http://localhost:8000/docs
-```
+Declare the workbook **shape** with `SHEET_KIND=tri|rowing` (authoritative). If
+you leave it unset, sync falls back to header-based auto-detection
+(`ingest/sheet.py::detect_layout`). Either way it routes to the matching ingest:
 
-## Understanding the output
+- **Triathlon layout** — our Strava-style export with an `activities_raw` tab
+  (one athlete, dates as rows). Wellness columns that don't match the contract
+  are mapped by an LLM once per sheet shape (`ingest/mapping.py`), then cached.
+- **Pivoted multi-athlete layout** — e.g. a rowing-erg workbook: a roster tab
+  plus one tab per dated test session, each row a different athlete. An LLM
+  infers the layout config once (`ingest/rowing.py`), names are canonicalised
+  against the roster, and **one** athlete is isolated. Requires
+  `SHEET_ATHLETE_QUERY` (e.g. `"Banks, Claire"`); its rows are stamped with
+  `STRAVA_ATHLETE_ID` so a real/simulated Strava feed fuses with it. Erg pieces
+  land as `Sport.OTHER` Activities; the per-500m split trend is surfaced by an
+  additive detector (`analyze/rowing.py`).
 
-`synth report` / `/insights` returns a `SynthesisReport` (JSON):
+In both cases the LLM only ever sees column headers + a few sample cells (fenced
+as untrusted via `wrap_untrusted`), never full row values, and its output is
+validated before use.
 
-- **`summary`** — a narrative of the athlete's training across the period.
-- **`patterns`** — up to 10 findings (`trend` / `correlation` /
-  `anomaly_explanation` / `observation`), each with a date range, the metrics
-  involved, supporting activity ids, a confidence level, and caveats.
-- **`anomalies_reviewed`** — which deterministic anomalies the agent examined.
-- **`evidence`** — the agent's actual tool-call trace (written by the harness),
-  so every conclusion is traceable to the data it looked at.
-- **`data_coverage`** + identity fields (`report_id`, `generated_at`,
-  `contract_version`) — filled by the harness, not the model.
+## Testing end-to-end (no real Strava needed)
 
-## Testing
+Two throwaway harnesses build a self-contained test DB so you can exercise the
+whole pipeline offline. Each writes a SEPARATE `*.db` (gitignored), so the real
+`synth.db` is never touched. `uv run pytest -q` runs the unit suite.
 
-```bash
-uv run pytest -q          # 162 tests, fully offline (no network, no tokens)
-```
+**Rowing** — real erg sheet (AI-fallback ingest, one athlete isolated) + simulated Strava:
 
-The suite covers ingestion, the join, every metric and anomaly detector, the
-agent loop (against a scripted fake model), the security seams, and the API
-endpoints. The full CLI and API paths have also been validated **live** against
-the real Anthropic API end to end.
+    uv run python scripts/gen_rowing_test.py rowing_test.db
+    SYNTH_DB_PATH=rowing_test.db uv run synth analyze
+    SYNTH_DB_PATH=rowing_test.db uv run synth report --athlete banks_claire
 
-## Layout
+**Triathlon** — generated test Strava, then the real tri workbook fused under the
+same athlete (`one athlete, two sources`):
 
-```
-config.py     settings + secret redaction       store/      SQLite (encrypted PII)
-schemas.py    LOCKED v1.0 contract               analyze/    metrics + anomalies
-ingest/       strava + sheet + LLM col-mapping   synthesize/ agent, tools, prompts, validate, report
-normalize/    per-day join                       cli.py      sync | analyze | report
-app.py        FastAPI: /health /sync /insights   tests/      pytest (local, offline)
-```
+    uv run python scripts/gen_test_strava.py tri_test.db
+    SYNTH_DB_PATH=tri_test.db SHEET_KIND=tri \
+      SHEET_ACTIVITIES_PATH="Copy of Triathlon Training Sync.xlsx" \
+      STRAVA_ATHLETE_ID=anish STRAVA_CLIENT_ID= STRAVA_CLIENT_SECRET= \
+      uv run synth sync
+    SYNTH_DB_PATH=tri_test.db uv run synth analyze
+    SYNTH_DB_PATH=tri_test.db uv run synth report --athlete anish
 
-`schemas.py` + `CONTRACT.md` are the locked cross-boundary contract. See
-`docs/superpowers/specs/` for designs and `docs/superpowers/plans/` for the
-build plans.
+`report` prints the readable briefing; add `--format json` for the raw contract
+object. The first rowing run calls the LLM once to infer the layout, then caches it.
 
-## Contributions
+## Quickest test (everything is committed)
 
-- **Basil** — agentic/synthesis layer, ingestion, normalization, metrics &
-  anomalies, CLI/API wiring.
-- **Anish** — security hardening (encryption at rest, prompt-injection defense,
-  LLM-output validation, SQL parameterization) and the data-pipeline/validation
-  seams.
+A full **47-athlete dataset is already committed as `athletes_test.db`** — real
+erg results + per-athlete simulated Strava + wellness, with `analyze` already run
+and stored. **Nothing to generate, no Strava, no spreadsheet.** The *only* thing a
+report needs is `ANTHROPIC_API_KEY` in `.env` (the agent that writes the briefing
+is a live LLM call):
 
-## Status / known gaps
+    # 1. one-time setup
+    uv venv --python 3.12 && uv pip install -e ".[dev]"
+    cp .env.example .env          # set ANTHROPIC_API_KEY (Strava/Sheets NOT needed)
 
-See `docs/STATUS.md` for the current state and what's left. In short: the full
-pipeline works end to end on the sheet data and is live-validated; the remaining
-items are wiring **real Strava data** (each of us pulls our own account) and
-final submission polish.
+    # 2. report on ANY athlete — contrast the three patterns the system finds:
+    SYNTH_DB_PATH=athletes_test.db uv run synth report --athlete cox-madeline     # adapting: clean, keep loading
+    SYNTH_DB_PATH=athletes_test.db uv run synth report --athlete bonnem-lily      # plateau: erg stalled + recovery drift
+    SYNTH_DB_PATH=athletes_test.db uv run synth report --athlete bosio-giulia     # overreaching: back off now
+
+    # list every athlete id in the committed DB:
+    sqlite3 athletes_test.db "SELECT DISTINCT athlete_id FROM activity ORDER BY 1;"
+
+Add `--format json` for the raw contract object. You do **not** need to run `sync`
+or `analyze` against this DB — both are already baked in.
+
+### How the committed data was made (rebuild only if you want to change it)
+
+AG's rowing workbook holds ~50 athletes. To show the SAME system surfacing a
+**different pattern per athlete**, `scripts/multi_athlete.py` runs the unchanged
+pipeline across the whole roster: it ingests each athlete's real erg sessions,
+then plants a **lean** slice of simulated Strava shaped by that athlete's own erg
+trajectory — an LLM reads the trend and emits a small *validated* pattern config
+(adapting / plateau / overreaching), which deterministic code expands into daily
+training + wellness. (No app code is modified; see `DECISIONS.md`.)
+
+`athletes_test.db` is stored plaintext so it's portable across machines (the
+at-rest key is per-machine). Rebuilding needs `ANTHROPIC_API_KEY` + the workbook:
+
+    uv run python scripts/gen_all_athletes.py athletes_test.db
+
+It prints a per-athlete table (pattern category, erg/sim counts, erg vs training
+anomaly counts) so the spread is visible at a glance.
+
+See `docs/superpowers/specs/` for the design and `DECISIONS.md` for tradeoffs.

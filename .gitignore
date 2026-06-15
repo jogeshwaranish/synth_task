@@ -13,6 +13,10 @@
 *.db-journal
 *.sqlite
 *.sqlite3
+# EXCEPTION: the multi-athlete demo DB is a committed, PORTABLE test artifact
+# (synthetic Strava + real erg, stored PLAINTEXT on purpose so any checkout can
+# open it — production sync still encrypts). See DECISIONS.md.
+!athletes_test.db
 
 # Local training-data fixture: REAL personal data. Ships only if anonymized.
 # See DECISIONS.md (repo-privacy decision) before un-ignoring.
@@ -21,6 +25,10 @@ Triathlon Training Sync.xlsx - *.csv
 # Any real workbook at the repo root (e.g. "Copy of Triathlon Training Sync.xlsx").
 *.xlsx
 *.xlsm
+# EXCEPTION: AG authorized committing the two workbooks the demo runs on so the
+# pipeline is testable without their Strava/Sheets. See DECISIONS.md.
+!rowing_women_2025-2026 ERGS-2.xlsx
+!Copy of Triathlon Training Sync.xlsx
 
 # Python
 __pycache__/

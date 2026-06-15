@@ -129,12 +129,31 @@ def test_cli_report_prints_validated_json_to_stdout(tmp_path, monkeypatch, capsy
 
     monkeypatch.setattr(cli, "generate_report", fake_generate)
 
-    assert cli.main(["report", "--athlete", "ag", "--start", "2026-06-01"]) == 0
+    # --format json keeps the machine deliverable on stdout (default is now md).
+    assert cli.main(["report", "--athlete", "ag", "--start", "2026-06-01",
+                     "--format", "json"]) == 0
     out = capsys.readouterr().out
     parsed = __import__("json").loads(out)           # stdout is pure JSON
     assert parsed["athlete_id"] == "ag" and parsed["report_id"] == "r1"
     assert "HUSH_CLIENT_SECRET" not in out
     assert seen == {"athlete": "ag", "start": "2026-06-01", "end": None}
+
+
+def test_cli_report_defaults_to_human_readable_markdown(tmp_path, monkeypatch, capsys):
+    from datetime import date, datetime, timezone
+    from schemas import SynthesisReport
+    s = _settings(tmp_path)
+    monkeypatch.setattr(cli, "get_settings", lambda: s)
+    canned = SynthesisReport(
+        report_id="r1", generated_at=datetime(2026, 6, 12, tzinfo=timezone.utc),
+        athlete_id="ag", period_start=date(2026, 6, 1), period_end=date(2026, 6, 7),
+        summary="all good", patterns=[],
+    )
+    monkeypatch.setattr(cli, "generate_report", lambda *a, **k: canned)
+    assert cli.main(["report", "--athlete", "ag"]) == 0
+    out = capsys.readouterr().out
+    assert out.lstrip().startswith("# Training Insights — ag")  # markdown, not JSON
+    assert "all good" in out
 
 
 def test_cli_report_with_no_data_fails_clearly(tmp_path, monkeypatch, capsys):
