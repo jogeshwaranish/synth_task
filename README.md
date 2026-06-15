@@ -121,10 +121,12 @@ is a live LLM call):
     uv venv --python 3.12 && uv pip install -e ".[dev]"
     cp .env.example .env          # set ANTHROPIC_API_KEY (Strava/Sheets NOT needed)
 
-    # 2. report on ANY athlete — contrast the three patterns the system finds:
-    SYNTH_DB_PATH=athletes_test.db uv run synth report --athlete cox-madeline     # adapting: clean, keep loading
+    # 2. report on ANY athlete — contrast the three patterns the system finds.
+    #    Each report is scoped to that athlete's own worklist; the exact coaching
+    #    read is the live agent's call, so wording varies run to run.
+    SYNTH_DB_PATH=athletes_test.db uv run synth report --athlete cox-madeline     # adapting: lightest worklist (~3 flags)
     SYNTH_DB_PATH=athletes_test.db uv run synth report --athlete bonnem-lily      # plateau: erg stalled + recovery drift
-    SYNTH_DB_PATH=athletes_test.db uv run synth report --athlete bosio-giulia     # overreaching: back off now
+    SYNTH_DB_PATH=athletes_test.db uv run synth report --athlete bosio-giulia     # overreaching: heaviest worklist, back off
 
     # list every athlete id in the committed DB:
     sqlite3 athletes_test.db "SELECT DISTINCT athlete_id FROM activity ORDER BY 1;"
