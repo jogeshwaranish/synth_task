@@ -18,7 +18,14 @@ INDEX_HTML = """<!doctype html>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>synth.</title>
-<script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"
+        integrity="sha384-/TQbtLCAerC3jgaim+N78RZSDYV7ryeoBCVqTuzRrFec2akfBkHS7ACQ3PQhvMVi"
+        crossorigin="anonymous"></script>
+<!-- marked does NOT sanitize HTML; DOMPurify scrubs its output before we ever
+     touch innerHTML. See renderMarkdown(). Both scripts are SRI-pinned. -->
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"
+        integrity="sha384-+VfUPEb0PdtChMwmBcBmykRMDd+v6D/oFmB3rZM/puCMDYcIvF968OimRh4KQY9a"
+        crossorigin="anonymous"></script>
 <style>
   :root {
     --green: #10B981;
@@ -258,9 +265,12 @@ INDEX_HTML = """<!doctype html>
   }
 
   // PRIMARY path: the harness-rendered Markdown briefing.
+  // The briefing is built from LLM output (and, via prompt-injection, possibly
+  // from untrusted athlete data). marked does NOT sanitize, so any raw HTML in
+  // the markdown would otherwise execute via innerHTML — sanitize before insert.
   function renderMarkdown(md) {
-    $("report-body").innerHTML =
-      '<div class="briefing">' + marked.parse(md) + "</div>";
+    const clean = DOMPurify.sanitize(marked.parse(md));
+    $("report-body").innerHTML = '<div class="briefing">' + clean + "</div>";
     show("report");
   }
 
