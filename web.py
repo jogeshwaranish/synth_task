@@ -177,10 +177,18 @@ INDEX_HTML = """<!doctype html>
     <div class="card">
       <form id="report-form">
         <div class="field">
+          <label for="dataset">Dataset</label>
+          <select id="dataset" name="dataset">
+            <option value="rowing">Rowing squad</option>
+            <option value="triathlon">Triathlon</option>
+          </select>
+        </div>
+        <div class="field">
           <label for="athlete">Athlete ID</label>
           <input type="text" id="athlete" name="athlete" required
-                 autocomplete="off" placeholder="cox-madeline" />
-          <div class="hint">e.g. cox-madeline, bonnem-lily, bosio-giulia</div>
+                 autocomplete="off" list="athlete-list" placeholder="cox-madeline" />
+          <datalist id="athlete-list"></datalist>
+          <div class="hint" id="athlete-hint">Loading athletes…</div>
         </div>
         <div class="row">
           <div class="field">
@@ -192,7 +200,8 @@ INDEX_HTML = """<!doctype html>
             <input type="date" id="end" name="end" />
           </div>
         </div>
-        <button type="submit" id="submit-btn">Get Report</button>
+        <div class="hint" id="date-hint"></div>
+        <button type="submit" id="submit-btn" style="margin-top:1.25rem">Get Report</button>
       </form>
     </div>
   </section>
@@ -293,13 +302,79 @@ INDEX_HTML = """<!doctype html>
   }
 
   let currentAthlete = "";
+  // athlete_id -> {start, end} for the selected dataset; drives the date bounds.
+  let spans = {};
+
+  // Pre-fill and CLAMP the date pickers to a [start, end] window so the coach
+  // can only choose dates the data actually covers.
+  function applyWindow(start, end) {
+    for (const el of [$("start"), $("end")]) {
+      el.min = start || "";
+      el.max = end || "";
+    }
+    $("start").value = start || "";
+    $("end").value = end || "";
+    $("date-hint").textContent = (start && end)
+      ? "Data covers " + start + " to " + end + ". Narrow the window if you like."
+      : "";
+  }
+
+  // When an athlete is chosen, snap the date window to that athlete's coverage.
+  function onAthletePicked() {
+    const span = spans[$("athlete").value.trim()];
+    if (span) applyWindow(span.start, span.end);
+  }
+
+  // Load the athlete roster + date spans for the selected dataset and rebuild
+  // the picker. Names come from the data, so the UI never lists stale athletes.
+  async function loadDataset() {
+    const dataset = $("dataset").value;
+    $("athlete-hint").textContent = "Loading athletes…";
+    spans = {};
+    try {
+      const resp = await fetch("/athletes?dataset=" + encodeURIComponent(dataset));
+      if (!resp.ok) throw new Error("athletes " + resp.status);
+      const rows = (await resp.json()).athletes || [];
+      const list = $("athlete-list");
+      list.innerHTML = "";
+      rows.forEach((r) => {
+        spans[r.athlete_id] = { start: r.start, end: r.end };
+        const opt = document.createElement("option");
+        opt.value = r.athlete_id;
+        list.appendChild(opt);
+      });
+
+      const ids = rows.map((r) => r.athlete_id);
+      if (dataset === "triathlon" && ids.length) {
+        // One athlete — prefill it and its full window.
+        $("athlete").value = ids[0];
+        $("athlete-hint").textContent = "Single athlete: " + ids[0];
+        onAthletePicked();
+      } else {
+        $("athlete").value = "";
+        const sample = ids.slice(0, 3).join(", ");
+        $("athlete-hint").textContent = ids.length
+          ? "e.g. " + sample + " (" + ids.length + " athletes) — pick one to set the dates"
+          : "No athletes found in this dataset.";
+        // Default the window to the whole dataset until an athlete is chosen.
+        const starts = rows.map((r) => r.start).filter(Boolean).sort();
+        const ends = rows.map((r) => r.end).filter(Boolean).sort();
+        applyWindow(starts[0], ends[ends.length - 1]);
+      }
+    } catch (e) {
+      $("athlete-hint").textContent =
+        "Couldn't load athletes. Check that the server is running.";
+    }
+  }
 
   async function getReport(ev) {
     ev.preventDefault();
     currentAthlete = $("athlete").value.trim();
     if (!currentAthlete) return;
 
-    const params = new URLSearchParams({ athlete: currentAthlete });
+    const params = new URLSearchParams({
+      athlete: currentAthlete, dataset: $("dataset").value,
+    });
     if ($("start").value) params.set("start", $("start").value);
     if ($("end").value) params.set("end", $("end").value);
 
@@ -317,11 +392,14 @@ INDEX_HTML = """<!doctype html>
     }
   }
 
+  $("dataset").addEventListener("change", loadDataset);
+  $("athlete").addEventListener("change", onAthletePicked);
   $("report-form").addEventListener("submit", getReport);
   $("new-report").addEventListener("click", (ev) => {
     ev.preventDefault();
     show("form");
   });
+  loadDataset();  // populate the default (rowing) roster on first load
 </script>
 </body>
 </html>

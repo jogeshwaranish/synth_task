@@ -422,6 +422,17 @@ def get_metrics(
     return [DailyMetrics.model_validate(dict(r)) for r in cur.fetchall()]
 
 
+def athlete_spans(conn: sqlite3.Connection) -> list[dict[str, str | int]]:
+    """Per-athlete date coverage from daily_metrics: the [start, end] window the
+    UI uses to pre-fill and clamp the date pickers. No user input → no binds."""
+    cur = conn.execute(
+        "SELECT athlete_id, MIN(local_date) AS start, MAX(local_date) AS end, "
+        "COUNT(*) AS n_days FROM daily_metrics GROUP BY athlete_id "
+        "ORDER BY athlete_id"
+    )
+    return [dict(r) for r in cur.fetchall()]
+
+
 def upsert_anomalies(conn: sqlite3.Connection, anomalies: list[Anomaly]) -> int:
     cols = ", ".join(ANOMALY_COLUMNS)
     placeholders = ", ".join("?" for _ in ANOMALY_COLUMNS)

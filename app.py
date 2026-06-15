@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import time
 from collections import deque
+from pathlib import Path
 from threading import Lock
 
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -26,6 +27,32 @@ from synthesize.validate import InsightRejected
 from web import INDEX_HTML
 
 app = FastAPI(title="synth")
+
+# --- Datasets -------------------------------------------------------------
+# Two pre-built SQLite fixtures the coach can analyze: the rowing squad and the
+# single triathlon athlete (Strava + the triathlon workbook fused under id
+# `triathlon`). The browser sends a dataset NAME, never a path — this fixed
+# allowlist is the security boundary that stops a client from steering the app
+# at an arbitrary file (path traversal / info disclosure). Unknown name → 404.
+# TODO(security): paths are read-only fixtures resolved under the repo root. If
+# datasets ever become user-supplied or uploadable, sandbox the storage dir and
+# re-validate here before trusting any name→path mapping.
+_REPO_ROOT = Path(__file__).resolve().parent
+DATASETS: dict[str, Path] = {
+    "rowing": _REPO_ROOT / "athletes_test.db",
+    "triathlon": _REPO_ROOT / "tri_test.db",
+}
+_DEFAULT_DATASET = "rowing"
+
+
+def _dataset_conn(dataset: str):
+    """Resolve a dataset NAME to its connection via the fixed allowlist."""
+    path = DATASETS.get(dataset)
+    if path is None:
+        raise HTTPException(status_code=404, detail=f"unknown dataset '{dataset}'")
+    conn = db.connect(path)
+    db.init_db(conn)
+    return conn
 
 # --- Per-IP rate limiting -------------------------------------------------
 # Each /insights call spends real LLM tokens, so cap callers cheaply with an
@@ -104,13 +131,21 @@ def sync() -> dict:
     return out
 
 
+@app.get("/athletes")
+def athletes(dataset: str = _DEFAULT_DATASET) -> dict:
+    """Athlete ids + their date coverage, for the form's picker and date bounds.
+    Read-only and LLM-free, so it is not rate limited."""
+    conn = _dataset_conn(dataset)
+    return {"dataset": dataset, "athletes": db.athlete_spans(conn)}
+
+
 @app.get("/insights", dependencies=[Depends(enforce_rate_limit)])
 def insights(
-    athlete: str | None = None, start: str | None = None, end: str | None = None
+    athlete: str | None = None, start: str | None = None, end: str | None = None,
+    dataset: str = _DEFAULT_DATASET,
 ) -> dict:
     s = get_settings()
-    conn = db.connect(s.synth_db_path)
-    db.init_db(conn)
+    conn = _dataset_conn(dataset)
     try:
         report = generate_report(conn, s, athlete=athlete, start=start, end=end)
     except ValueError as e:

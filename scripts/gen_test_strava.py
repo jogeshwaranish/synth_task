@@ -18,6 +18,7 @@ Usage:  uv run python scripts/gen_test_strava.py [db_path]
 from __future__ import annotations
 
 import math
+import os
 import random
 import sys
 from datetime import date, datetime, time, timedelta
@@ -27,7 +28,10 @@ from schemas import Activity, Source, Sport, WellnessDay
 from security import crypto
 from store import db
 
-ATHLETE = "anish"
+# The synthetic athlete id. Overridable so the same harness can seed the
+# triathlon dataset under a chosen id (e.g. SYNTH_TEST_ATHLETE=triathlon) while
+# the historical default ("anish", per README) keeps working unchanged.
+ATHLETE = os.environ.get("SYNTH_TEST_ATHLETE", "anish")
 START = date(2025, 12, 22)
 END = date(2026, 5, 14)
 RNG = random.Random(42)  # deterministic

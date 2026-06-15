@@ -388,3 +388,34 @@ disallowed, so a shared store was avoided. Flagged `# TODO(security)` that the
 limiter state is per-process — behind multiple uvicorn workers the effective
 limit is (n_workers × 10), so it needs a shared store before any scaled-out
 deploy. No contract change; `schemas.py`/`CONTRACT.md` untouched.
+
+## Web frontend, part 2: two selectable datasets + data-driven date pickers
+The coach can now analyze EITHER dataset from the form: the rowing squad
+(`athletes_test.db`, the committed 47-athlete fixture) and the triathlon athlete
+(`tri_test.db`). The browser sends a dataset NAME; `app.DATASETS` is a fixed
+name→path allowlist resolved under the repo root — the security boundary that
+stops a client steering the app at an arbitrary file (the `dataset=../…` case
+returns 404, verified). Unknown name → 404; flagged `# TODO(security)` for the
+day datasets become user-supplied. A new read-only, un-rate-limited
+`GET /athletes?dataset=` returns each athlete's `[start, end]` span (via the new
+`db.athlete_spans`), so the form fills the athlete picker from real data and
+**pre-fills + clamps** the date inputs to each athlete's coverage (coach narrows
+within, never outside). No contract change.
+
+`tri_test.db` stays gitignored (repo convention: generated DBs are throwaway)
+and is reproducible offline from the committed workbook — the triathlon athlete
+is stamped `triathlon` via a new backward-compatible `SYNTH_TEST_ATHLETE` env on
+`scripts/gen_test_strava.py` (default still `anish`):
+
+    SYNTH_TEST_ATHLETE=triathlon uv run python scripts/gen_test_strava.py tri_test.db
+    SYNTH_DB_PATH=tri_test.db SHEET_KIND=tri \
+      SHEET_ACTIVITIES_PATH="Copy of Triathlon Training Sync.xlsx" \
+      STRAVA_ATHLETE_ID=triathlon STRAVA_CLIENT_ID= STRAVA_CLIENT_SECRET= \
+      uv run synth sync
+    SYNTH_DB_PATH=tri_test.db uv run synth analyze
+
+Encryption modes can differ per file (rowing fixture is plaintext, `tri_test.db`
+is key-encrypted) and still read correctly: `db._decrypt_field` passes
+unprefixed plaintext straight through, so a DB is self-consistent as long as the
+app reads it with the per-machine key. The two datasets stay in SEPARATE
+immutable DBs — no merging — which also avoids mutating the committed fixture.

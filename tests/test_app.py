@@ -9,10 +9,14 @@ from synthesize.validate import InsightRejected
 
 
 @pytest.fixture(autouse=True)
-def _fresh_rate_limiter():
-    """Each test starts with an empty limiter window so one test's requests
-    can't trip the limiter in another."""
+def _isolate(tmp_path, monkeypatch):
+    """Each test starts with an empty limiter window (so one test's requests
+    can't trip the limiter in another) and with the dataset registry pointed at
+    throwaway temp DBs (so unit tests never read or mutate the committed
+    athletes_test.db fixture)."""
     app_module.rate_limiter.reset()
+    monkeypatch.setitem(app_module.DATASETS, "rowing", tmp_path / "rowing.db")
+    monkeypatch.setitem(app_module.DATASETS, "triathlon", tmp_path / "triathlon.db")
     yield
     app_module.rate_limiter.reset()
 
@@ -166,3 +170,62 @@ def test_insights_rate_limited_returns_429(tmp_path, monkeypatch):
         "Rate limit exceeded. Each report costs LLM tokens — "
         "please wait before retrying."
     )
+
+
+# --- Datasets -------------------------------------------------------------
+
+from schemas import DailyMetrics
+from store import db as store_db
+
+
+def _seed(path, rows):
+    conn = store_db.connect(path)
+    store_db.init_db(conn)
+    store_db.upsert_metrics(conn, rows)
+    return path
+
+
+def test_athletes_lists_per_athlete_date_spans():
+    p = app_module.DATASETS["rowing"]
+    _seed(p, [
+        DailyMetrics(local_date=date(2026, 1, 1), athlete_id="x", rest_day=False),
+        DailyMetrics(local_date=date(2026, 1, 9), athlete_id="x", rest_day=False),
+        DailyMetrics(local_date=date(2026, 2, 1), athlete_id="y", rest_day=False),
+    ])
+    r = TestClient(app_module.app).get("/athletes?dataset=rowing")
+    assert r.status_code == 200
+    athletes = r.json()["athletes"]
+    assert {"athlete_id": "x", "start": "2026-01-01",
+            "end": "2026-01-09", "n_days": 2} in athletes
+    assert any(a["athlete_id"] == "y" for a in athletes)
+
+
+def test_athletes_unknown_dataset_is_404():
+    r = TestClient(app_module.app).get("/athletes?dataset=../secret")
+    assert r.status_code == 404
+    assert "../secret" not in r.text or "unknown dataset" in r.json()["detail"]
+
+
+def test_insights_unknown_dataset_is_404(monkeypatch):
+    # Rejected by the dataset allowlist before any work happens.
+    r = TestClient(app_module.app).get("/insights?athlete=x&dataset=bogus")
+    assert r.status_code == 404
+
+
+def test_insights_routes_to_selected_dataset(tmp_path, monkeypatch):
+    _seed(app_module.DATASETS["triathlon"],
+          [DailyMetrics(local_date=date(2026, 1, 1),
+                        athlete_id="triathlon", rest_day=False)])
+    monkeypatch.setattr(app_module, "get_settings", lambda: _settings(tmp_path))
+    seen = {}
+
+    def fake(conn, settings, *, athlete=None, start=None, end=None):
+        seen["athlete"] = athlete
+        return _canned("triathlon")
+
+    monkeypatch.setattr(app_module, "generate_report", fake)
+    r = TestClient(app_module.app).get(
+        "/insights?athlete=triathlon&dataset=triathlon")
+    assert r.status_code == 200
+    assert r.json()["athlete_id"] == "triathlon"
+    assert seen["athlete"] == "triathlon"
