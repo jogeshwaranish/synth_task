@@ -124,6 +124,16 @@ def test_index_serves_html_page():
     assert 'id="athlete"' in body
 
 
+def test_report_page_renders_status_badge_and_insight_cards():
+    # The report view is built client-side from the /insights JSON, so a Python
+    # test can only assert the served page carries the markup that builds it: the
+    # status badge, the insight cards, and the heuristic that drives the badge.
+    body = TestClient(app_module.app).get("/").text
+    assert "status-badge" in body          # status badge element
+    assert "insight-card" in body          # at least one insight card
+    assert "renderReport" in body and "deriveStatus" in body
+
+
 def test_insights_includes_briefing_markdown(tmp_path, monkeypatch):
     s = _settings(tmp_path)
     monkeypatch.setattr(app_module, "get_settings", lambda: s)
