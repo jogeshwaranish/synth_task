@@ -181,6 +181,30 @@ def test_unknown_tool_call_yields_no_evidence_and_keeps_going(tmp_path):
     assert report.evidence == []          # bogus tool recorded nothing
 
 
+def test_bad_model_date_arg_does_not_crash_run(tmp_path):
+    # A model-supplied impossible date used to raise ValueError out of the tool
+    # and abort the whole run (the 47-athlete-sweep crash). The harness must now
+    # hand the error back to the model and keep going to a valid report.
+    s = _settings(tmp_path)
+    conn = db.connect(s.synth_db_path)
+    db.init_db(conn)
+    key = crypto.load_or_create_key(s.encryption_key_path)
+    _seed(conn, key)
+    client = FakeClient([
+        SimpleNamespace(stop_reason="tool_use", content=[
+            _tool_use("t1", "get_daily_metrics",
+                      {"date_start": "2026-02-30", "date_end": "2026-03-11"}),
+        ]),
+        SimpleNamespace(stop_reason="end_turn", content=[_text(_report_json())]),
+    ])
+    report = run_synthesis(conn, s, "ag", date(2026, 6, 1), date(2026, 6, 7),
+                           key=key, client=client)
+    assert report.patterns[0].pattern_id == "p1"          # run completed
+    # the failed call is still a real tool, so its error is recorded in the trace
+    assert [e.tool for e in report.evidence] == ["get_daily_metrics"]
+    assert "error" in report.evidence[0].result_digest.lower()
+
+
 def test_exhausting_iterations_raises(tmp_path):
     s = _settings(tmp_path)
     conn = db.connect(s.synth_db_path)
