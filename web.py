@@ -377,24 +377,37 @@ INDEX_HTML = """<!doctype html>
     return null;
   }
 
-  // "System read" — an explicitly-labelled heuristic. Severities/ACWR aren't in
-  // the contract, so we proxy: ACWR from the compare_periods digest (when
-  // present) + high/medium anomaly_explanation patterns as the anomaly signal.
-  // Worst badge wins.
+  // "System read" — an explicitly-labelled heuristic over ONLY the hard signals
+  // the report actually carries. Returns null when nothing is derivable, so the
+  // badge (and its disclaimer) are omitted rather than guessing.
+  //
+  // Overreaching fires only on a real ACWR > 1.3 (parsed from the compare_periods
+  // digest) OR a flagged anomaly — NEVER inferred from insight/pattern text. The
+  // "severity == flag" branch is wired but inert: anomaly severities are not in
+  // the contract (anomalies_reviewed is ids only — "{athlete}:{date}:{metric}",
+  // no severity), so it can't be evaluated client-side.
+  // TODO(viz): pass anomaly severities through the contract to honour the
+  // "severity == flag" rule.
   function deriveStatus(report) {
     const cp = latestComparePeriods(report);
-    const acwr = cp && cp.period_a ? cp.period_a.mean_acwr : null;
-    const pats = report.patterns || [];
-    const highExpl = pats.some((p) => p.kind === "anomaly_explanation" && p.confidence === "high");
-    const midExpl = pats.some((p) => p.kind === "anomaly_explanation" &&
-      (p.confidence === "medium" || p.confidence === "high"));
-    if ((acwr != null && acwr > 1.3) || highExpl)
+    const acwr = cp && cp.period_a && typeof cp.period_a.mean_acwr === "number"
+      ? cp.period_a.mean_acwr : null;
+    const flagged = false;  // severities not in the report contract — see above
+
+    if ((acwr !== null && acwr > 1.3) || flagged)
       return { cls: "status-red", icon: "🔴", label: "Overreaching" };
-    if (midExpl)
+
+    // Plateau: explicit heuristic on insight confidence (an allowed badge input),
+    // reached only after Overreaching has been ruled out on hard signals.
+    const plateau = (report.patterns || []).some((p) =>
+      p.kind === "anomaly_explanation" && (p.confidence === "medium" || p.confidence === "high"));
+    if (plateau)
       return { cls: "status-golden", icon: "⚠", label: "Plateau" };
-    if (acwr != null && (acwr < 0.8 || acwr > 1.3))
-      return { cls: "status-golden", icon: "⚠", label: "Load imbalance" };
-    return { cls: "status-green", icon: "✓", label: "On Track" };
+
+    if (acwr !== null && acwr >= 0.8 && acwr <= 1.3)
+      return { cls: "status-green", icon: "✓", label: "On Track" };
+
+    return null;  // no clear, supported signal -> omit the badge entirely
   }
 
   function buildHeader(report) {
@@ -415,6 +428,7 @@ INDEX_HTML = """<!doctype html>
 
   function buildStatus(report) {
     const s = deriveStatus(report);
+    if (!s) return "";  // underivable -> no badge, no SYSTEM READ label, no disclaimer
     return '<div class="status-badge ' + s.cls + '">' +
         "<span>" + s.icon + " " + escapeHtml(s.label) + "</span>" +
         '<span class="sys">System read</span>' +
@@ -426,25 +440,30 @@ INDEX_HTML = """<!doctype html>
     const cp = latestComparePeriods(report);
     const a = (cp && cp.period_a) || {};
     const dl = (cp && cp.deltas) || {};
-    const acwr = fmt(a.mean_acwr, 2);
-    const acwrCls = (a.mean_acwr != null && a.mean_acwr >= 0.8 && a.mean_acwr <= 1.3)
-      ? "green" : "golden";
+    const tiles = [];
+    // Only push a tile when the metric has a real value; absent/empty -> no tile.
+    const pushTile = (k, v, cls) => {
+      if (v === null || v === undefined || v === "") return;
+      tiles.push('<div class="metric-tile"><div class="k">' + escapeHtml(k) + "</div>" +
+        '<div class="v' + (cls ? " " + cls : "") + '">' + escapeHtml(v) + "</div></div>");
+    };
+
     const load = fmt(a.mean_acute_load_7d, 0);
-    const loadArrow = dl.mean_acute_load_7d == null ? ""
-      : (dl.mean_acute_load_7d > 0 ? " ↑" : (dl.mean_acute_load_7d < 0 ? " ↓" : ""));
-    // pace_trend_pct_14d / hr_at_pace_trend_pct_14d live only in DailyMetrics
-    // rows, which the report does not carry (get_daily_metrics digests are bare
-    // row counts). Shown as "—".
+    if (load !== null) {
+      const arrow = dl.mean_acute_load_7d == null ? ""
+        : (dl.mean_acute_load_7d > 0 ? " ↑" : (dl.mean_acute_load_7d < 0 ? " ↓" : ""));
+      pushTile("Acute load 7d", load + arrow, "green");
+    }
+    const acwr = fmt(a.mean_acwr, 2);
+    if (acwr !== null)
+      pushTile("ACWR", acwr, (a.mean_acwr >= 0.8 && a.mean_acwr <= 1.3) ? "green" : "golden");
+
+    // pace_trend_pct_14d / hr_at_pace_trend_pct_14d aren't carried in the report
+    // (get_daily_metrics digests are bare row counts) — omitted, never shown empty.
     // TODO(viz): surface these (and an ACWR sparkline) if a metrics endpoint is added.
-    const tile = (k, v, cls) =>
-      '<div class="metric-tile"><div class="k">' + escapeHtml(k) + "</div>" +
-      '<div class="v' + (cls ? " " + cls : "") + '">' + escapeHtml(v) + "</div></div>";
-    return '<div class="metric-strip">' +
-      tile("Acute load 7d", (load != null ? load : "—") + loadArrow, load != null ? "green" : "") +
-      tile("ACWR", acwr != null ? acwr : "—", acwr != null ? acwrCls : "") +
-      tile("Erg pace 14d", "—", "") +
-      tile("HR @ pace 14d", "—", "") +
-    "</div>";
+
+    if (!tiles.length) return "";  // no real data -> no strip at all
+    return '<div class="metric-strip">' + tiles.join("") + "</div>";
   }
 
   // Patterns end their description with "EVIDENCE: ..."; split so the takeaway
