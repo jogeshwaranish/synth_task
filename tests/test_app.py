@@ -1,10 +1,20 @@
 """FastAPI surface — thin wrappers, exercised with Starlette's TestClient."""
 
+import pytest
 from fastapi.testclient import TestClient
 
 import app as app_module
 from config import Settings
 from synthesize.validate import InsightRejected
+
+
+@pytest.fixture(autouse=True)
+def _fresh_rate_limiter():
+    """Each test starts with an empty limiter window so one test's requests
+    can't trip the limiter in another."""
+    app_module.rate_limiter.reset()
+    yield
+    app_module.rate_limiter.reset()
 
 
 def _settings(tmp_path, **over):
@@ -88,3 +98,71 @@ def test_insights_rejected_output_is_502(tmp_path, monkeypatch):
     assert r.status_code == 502
     # the rejected payload itself is never echoed back
     assert r.json()["detail"] == "model output failed validation"
+
+
+# --- Web frontend ---------------------------------------------------------
+
+def _canned(athlete: str = "cox-madeline") -> SynthesisReport:
+    return SynthesisReport(
+        report_id="r1", generated_at=datetime(2026, 6, 12, tzinfo=timezone.utc),
+        athlete_id=athlete, period_start=date(2026, 6, 1),
+        period_end=date(2026, 6, 7), summary="Looking strong.", patterns=[],
+    )
+
+
+def test_index_serves_html_page():
+    r = TestClient(app_module.app).get("/")
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/html")
+    body = r.text
+    # logotype and the athlete-ID input are both present
+    assert "synth." in body
+    assert 'id="athlete"' in body
+
+
+def test_insights_includes_briefing_markdown(tmp_path, monkeypatch):
+    s = _settings(tmp_path)
+    monkeypatch.setattr(app_module, "get_settings", lambda: s)
+    monkeypatch.setattr(app_module, "generate_report",
+                        lambda *a, **k: _canned("cox-madeline"))
+
+    r = TestClient(app_module.app).get("/insights?athlete=cox-madeline")
+    assert r.status_code == 200
+    body = r.json()
+    assert isinstance(body["briefing_md"], str) and body["briefing_md"]
+    # rendered from the report, not echoed from the model
+    assert "Training Insights — cox-madeline" in body["briefing_md"]
+    # the existing JSON contract is still intact alongside the markdown
+    assert body["athlete_id"] == "cox-madeline"
+
+
+def test_insights_unknown_athlete_404_has_no_payload_or_trace(tmp_path, monkeypatch):
+    s = _settings(tmp_path)
+    monkeypatch.setattr(app_module, "get_settings", lambda: s)
+
+    def boom(conn, settings, *, athlete=None, start=None, end=None):
+        raise ValueError(f"no daily metrics for athlete '{athlete}'")
+
+    monkeypatch.setattr(app_module, "generate_report", boom)
+    r = TestClient(app_module.app).get("/insights?athlete=nobody")
+    assert r.status_code == 404
+    detail = r.json()["detail"]
+    assert "Traceback" not in detail and "File \"" not in detail
+
+
+def test_insights_rate_limited_returns_429(tmp_path, monkeypatch):
+    s = _settings(tmp_path)
+    monkeypatch.setattr(app_module, "get_settings", lambda: s)
+    monkeypatch.setattr(app_module, "generate_report",
+                        lambda *a, **k: _canned())
+
+    client = TestClient(app_module.app)
+    statuses = [client.get("/insights?athlete=cox-madeline").status_code
+                for _ in range(11)]
+    assert 429 in statuses
+    breached = next(c for c in [client.get("/insights?athlete=cox-madeline")]
+                    if c.status_code == 429)
+    assert breached.json()["detail"] == (
+        "Rate limit exceeded. Each report costs LLM tokens — "
+        "please wait before retrying."
+    )

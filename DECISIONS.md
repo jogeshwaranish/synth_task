@@ -373,3 +373,18 @@ shape is planted FROM that athlete's own erg trajectory. Decisions:
   `tests/test_agent_tools.py::test_query_anomalies_scopes_to_one_athlete`. Verified
   end-to-end: all three README report targets now run, each scoped to its own
   anomalies (cox-madeline 3, bonnem-lily watch 27, bosio-giulia 41).
+
+## Web frontend (feature/web-frontend)
+A coach views reports in a browser. One self-contained static page is served from
+`GET /` via `HTMLResponse` (CSS+JS inlined, marked.js from CDN) — no StaticFiles
+mount, no second origin, no CORS. `app.py` stays delegation-only; the page lives
+in `web.py`. `GET /insights` now also returns `briefing_md`, the human-readable
+briefing produced by `synthesize/render.render_markdown` (the task brief called it
+`render_report`, but the real function is `render_markdown` — used the real one).
+The 404/502 handling is unchanged and rejected payloads are still never echoed.
+Per-IP rate limiting (10 req/60s, HTTP 429) is a dependency-free in-process
+sliding window: `slowapi` turned out not to be in the lockfile and Redis is
+disallowed, so a shared store was avoided. Flagged `# TODO(security)` that the
+limiter state is per-process — behind multiple uvicorn workers the effective
+limit is (n_workers × 10), so it needs a shared store before any scaled-out
+deploy. No contract change; `schemas.py`/`CONTRACT.md` untouched.
