@@ -83,8 +83,14 @@ TOOL_SCHEMAS: list[dict] = [
 TOOL_NAMES = frozenset(t["name"] for t in TOOL_SCHEMAS)
 
 
-def query_anomalies(conn, *, severity: str | None = None) -> list[dict]:
-    rows = db.get_anomalies(conn)
+def query_anomalies(conn, athlete_id: str, *, severity: str | None = None) -> list[dict]:
+    # Scope to THIS athlete. The anomaly table has no athlete_id column — the
+    # contract carries the athlete in the anomaly_id prefix
+    # ('<athlete_id>:<date>:<metric>'). With one athlete per DB that didn't
+    # matter; a combined multi-athlete DB needs prefix-scoping or every
+    # athlete's worklist leaks into one report's prompt.
+    rows = [a for a in db.get_anomalies(conn)
+            if a.anomaly_id.startswith(f"{athlete_id}:")]
     if severity is not None:
         rows = [a for a in rows if a.severity.value == severity]
     return [a.model_dump(mode="json") for a in rows]
@@ -165,7 +171,7 @@ def compare_periods(
 
 def dispatch(conn, key, athlete_id: str, name: str, args: dict):
     if name == "query_anomalies":
-        return query_anomalies(conn, severity=args.get("severity"))
+        return query_anomalies(conn, athlete_id, severity=args.get("severity"))
     if name == "get_daily_metrics":
         return get_daily_metrics(conn, athlete_id, **args)
     if name == "get_activity_detail":

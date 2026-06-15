@@ -39,11 +39,30 @@ def test_query_anomalies_lists_all_then_filters_by_severity(tmp_path):
         _anomaly("acwr", AnomalySeverity.FLAG),
         _anomaly("rhr", AnomalySeverity.WATCH),
     ])
-    everything = tools.query_anomalies(conn)
+    everything = tools.query_anomalies(conn, "ag")
     assert {a["metric"] for a in everything} == {"acwr", "rhr"}
     assert everything[0]["description"] == "acwr fired"   # trusted text, not wrapped
-    only_flag = tools.query_anomalies(conn, severity="flag")
+    only_flag = tools.query_anomalies(conn, "ag", severity="flag")
     assert [a["metric"] for a in only_flag] == ["acwr"]
+
+
+def test_query_anomalies_scopes_to_one_athlete(tmp_path):
+    # A combined multi-athlete DB must not leak another athlete's worklist:
+    # anomalies are scoped by the anomaly_id prefix '<athlete_id>:...'.
+    conn = _conn(tmp_path)
+    mine = Anomaly(
+        anomaly_id="cox-madeline:2026-06-01:acwr", local_date=date(2026, 6, 1),
+        metric="acwr", value=1.6, baseline=1.0, zscore=None,
+        severity=AnomalySeverity.FLAG, description="mine",
+    )
+    theirs = Anomaly(
+        anomaly_id="bosio-giulia:2026-06-01:acwr", local_date=date(2026, 6, 1),
+        metric="acwr", value=1.7, baseline=1.0, zscore=None,
+        severity=AnomalySeverity.FLAG, description="theirs",
+    )
+    db.upsert_anomalies(conn, [mine, theirs])
+    out = tools.query_anomalies(conn, "cox-madeline")
+    assert [a["anomaly_id"] for a in out] == ["cox-madeline:2026-06-01:acwr"]
 
 
 def _metric(d, athlete="ag", **over):

@@ -121,16 +121,28 @@ is a live LLM call):
     uv venv --python 3.12 && uv pip install -e ".[dev]"
     cp .env.example .env          # set ANTHROPIC_API_KEY (Strava/Sheets NOT needed)
 
-    # 2. report on ANY athlete — contrast the three patterns the system finds:
-    SYNTH_DB_PATH=athletes_test.db uv run synth report --athlete cox-madeline     # adapting: clean, keep loading
+    # 2. report on ANY athlete — contrast the three patterns the system finds.
+    #    Each report is scoped to that athlete's own worklist; the exact coaching
+    #    read is the live agent's call, so wording varies run to run.
+    SYNTH_DB_PATH=athletes_test.db uv run synth report --athlete cox-madeline     # adapting: lightest worklist (~3 flags)
     SYNTH_DB_PATH=athletes_test.db uv run synth report --athlete bonnem-lily      # plateau: erg stalled + recovery drift
-    SYNTH_DB_PATH=athletes_test.db uv run synth report --athlete bosio-giulia     # overreaching: back off now
+    SYNTH_DB_PATH=athletes_test.db uv run synth report --athlete bosio-giulia     # overreaching: heaviest worklist, back off
 
     # list every athlete id in the committed DB:
     sqlite3 athletes_test.db "SELECT DISTINCT athlete_id FROM activity ORDER BY 1;"
 
 Add `--format json` for the raw contract object. You do **not** need to run `sync`
 or `analyze` against this DB — both are already baked in.
+
+> **Pick a strong model for reports.** The briefing is a live agent call whose
+> output is validated against the contract (`insight_schema.json`) and rejected if
+> off-contract — never propagated. Cheaper models produce more rejects: a
+> 47-athlete sweep on `claude-haiku-4-5` got full reports for **39/47** (the rest
+> were transient over-long fields / malformed JSON the validator caught, plus a
+> couple of agent crashes on a model-invented impossible date). For reliable
+> reports set a stronger model in `.env`, e.g. `ANTHROPIC_MODEL=claude-sonnet-4-6`
+> (or Opus). The data, anomalies, and per-athlete worklists are identical
+> regardless of model — only the written briefing changes.
 
 ### How the committed data was made (rebuild only if you want to change it)
 

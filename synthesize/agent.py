@@ -151,7 +151,7 @@ def run_synthesis(
         import anthropic
         client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
 
-    anomalies = [a for a in tools.query_anomalies(conn)
+    anomalies = [a for a in tools.query_anomalies(conn, athlete_id)
                  if period_start <= date.fromisoformat(a["local_date"]) <= period_end]
     coverage = _data_coverage(conn, athlete_id, period_start, period_end, key=key)
     messages = [{"role": "user",
@@ -171,7 +171,15 @@ def run_synthesis(
             for b in resp.content:
                 if b.type != "tool_use":
                     continue
-                output = tools.dispatch(conn, key, athlete_id, b.name, dict(b.input))
+                # The harness brokers every tool call: a model-supplied bad
+                # argument (e.g. an impossible date like '2026-02-30' fed to a
+                # date-parsing tool) must NOT crash synthesis. Return the error
+                # as the tool result so the model can correct itself, mirroring
+                # the {"error": ...} convention dispatch already uses.
+                try:
+                    output = tools.dispatch(conn, key, athlete_id, b.name, dict(b.input))
+                except Exception as e:  # noqa: BLE001 - never let model input abort the run
+                    output = {"error": f"{type(e).__name__}: {e}"}
                 if b.name in tools.TOOL_NAMES:
                     evidence.append(Evidence(
                         step=len(evidence) + 1, tool=b.name,
