@@ -419,3 +419,18 @@ is key-encrypted) and still read correctly: `db._decrypt_field` passes
 unprefixed plaintext straight through, so a DB is self-consistent as long as the
 app reads it with the per-machine key. The two datasets stay in SEPARATE
 immutable DBs — no merging — which also avoids mutating the committed fixture.
+
+## Web frontend, part 3: sanitize the rendered briefing (DOM XSS)
+The primary render path inserted `marked.parse(briefing_md)` straight into
+`innerHTML`. `marked` does not sanitize HTML, and the briefing is built from LLM
+output — which, via prompt-injection through `UntrustedText` (Strava names, sheet
+cells, wellness notes), can be attacker-influenced. So a model that emitted
+`<img src=x onerror=…>`/`<script>` would have executed it in the coach's browser.
+Fixed by scrubbing the parsed output with DOMPurify before it touches the DOM
+(`DOMPurify.sanitize(marked.parse(md))`); the JSON fallback path already escaped
+via `escapeHtml`, so both render paths are now safe. The `wrap_untrusted` fence
+protects the prompt, not the render — these are separate boundaries. Both CDN
+scripts (`marked`, `dompurify`) are now SRI-pinned (`integrity="sha384-…"`) to
+close the supply-chain gap, and the fix fails closed: if DOMPurify can't load,
+`renderMarkdown` throws and nothing renders rather than falling back to raw HTML.
+No contract change; `schemas.py`/`CONTRACT.md` untouched.
