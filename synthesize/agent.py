@@ -151,7 +151,7 @@ def run_synthesis(
         import anthropic
         client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
 
-    anomalies = [a for a in tools.query_anomalies(conn)
+    anomalies = [a for a in tools.query_anomalies(conn, athlete_id)
                  if period_start <= date.fromisoformat(a["local_date"]) <= period_end]
     coverage = _data_coverage(conn, athlete_id, period_start, period_end, key=key)
     messages = [{"role": "user",

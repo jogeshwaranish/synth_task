@@ -353,3 +353,23 @@ shape is planted FROM that athlete's own erg trajectory. Decisions:
   `key=` and encrypts. `.gitignore` un-ignores both real workbooks and this one DB
   via explicit `!` exceptions — AG authorized committing the two workbooks, which
   reverses the earlier repo-privacy default for these two files only.
+
+## Agent anomaly worklist scoped per-athlete (multi-athlete-DB fix)
+
+- Fresh-clone testing surfaced a blocker: `synth report --athlete <id>` against the
+  committed 47-athlete `athletes_test.db` failed with `prompt too long: 216k > 200k
+  tokens`. Root cause: `synthesize/agent.py` seeded the prompt from
+  `query_anomalies(conn)` filtered by DATE only, never by athlete, and the `anomaly`
+  table has no `athlete_id` column — the contract carries the athlete in the
+  `anomaly_id` prefix (`<athlete_id>:<date>:<metric>`). On the original
+  one-athlete-per-DB design this was correct; the combined multi-athlete DB made
+  every athlete's worklist leak into one report (e.g. cox-madeline's own 3 anomalies
+  vs the 1,105 squad-wide anomalies in her date window).
+- Fix (Basil's files — `synthesize/tools.py` + `agent.py`, flagged for PR review):
+  `query_anomalies` now takes `athlete_id` and scopes by the `anomaly_id` prefix.
+  Correct for BOTH DB shapes — single-athlete DBs share the one prefix, so it's a
+  no-op there; combined DBs get only the requested athlete's worklist. No contract
+  change (the prefix scheme already encodes the athlete). Regression test:
+  `tests/test_agent_tools.py::test_query_anomalies_scopes_to_one_athlete`. Verified
+  end-to-end: all three README report targets now run, each scoped to its own
+  anomalies (cox-madeline 3, bonnem-lily watch 27, bosio-giulia 41).
