@@ -144,6 +144,61 @@ or `analyze` against this DB — both are already baked in.
 > (or Opus). The data, anomalies, and per-athlete worklists are identical
 > regardless of model — only the written briefing changes.
 
+## Reading a report
+
+`synth report` prints a Markdown coaching briefing; add `--format json` for the
+raw `SynthesisReport` contract object (`schemas.py`) — same content, machine
+shape, suitable as the API/deliverable payload. The Markdown has four sections:
+
+| Section | What it is |
+|---|---|
+| **The big picture** | One-paragraph synthesis — the few things that actually change how this athlete should train/recover. Insight, not a day-by-day recap. |
+| **What stands out** | The numbered patterns. Each carries a *kind* (trend / connection / explanation / observation), a **confidence** (low/medium/high), the plain-language takeaway with the supporting numbers, a **"Worth noting"** caveat, and the technical `metrics` it rests on. |
+| **Questions to follow up** | Open questions for the coach — what the data can't settle on its own (e.g. was a big day planned, any illness/life stress). |
+| **How this was checked** | The **Evidence trail**: every tool call the agent made, in order, with its result digest. |
+
+Two things to know when reading it:
+
+- **The "How this was checked" trail is written by the harness, not the model.**
+  The agent can only *request* the four read-only tools; the harness brokers each
+  call, runs it against the DB, and records the step. The model cannot forge a
+  query it never ran or claim a number it wasn't given — so the trail is an
+  auditable record of what the report actually stands on.
+- **Every report is validated before you see it.** The model's JSON is checked
+  against `insight_schema.json` and rejected if off-contract (bad dates, over-long
+  fields, wrong shape) — never propagated. A rejected report is a fail-closed
+  safety stop, not a data problem; a stronger model clears them (see the callout
+  above).
+
+A trimmed real example (`bonnem-lily`, plateau pattern):
+
+    # Training Insights — bonnem-lily
+    *2025-12-24 → 2026-03-11 · 87 activities · 78 wellness days*
+
+    ## The big picture
+    Lily is carrying 7+ weeks of accumulated, incompletely-absorbed training
+    stress. Resting HR has drifted 44→49 bpm and HRV ~58→50 since late January —
+    a sustained signal her body is stressed faster than it recovers... The
+    priority now is a genuine recovery week before any further intensity.
+
+    ## What stands out
+    ### 1. 7-week drift in recovery markers
+    *Trend · high confidence · 2026-01-23 → 2026-03-11*
+    Your two overnight recovery signals — resting HR (lower = better) and HRV
+    (higher = better) — have both moved the wrong way since late January... a
+    7-week trend means a stress debt you haven't paid back. Action: take a
+    recovery week (~40% less volume, easy only), then reassess.
+    > **Worth noting:** HRV/RHR are single-sensor; illness, alcohol, poor sleep
+    > can independently suppress them...
+    _Metrics: `hrv`, `rhr`, `load_zscore_28d`_
+
+    ## How this was checked
+    The system reviewed 27 flagged data points and ran (trail recorded by the
+    system, not the AI):
+    1. `get_daily_metrics`(2025-12-24 → 2026-03-11) → 78 rows
+    2. `query_anomalies`(—) → 27 rows
+    3. `compare_periods`(...) → {deltas: mean_acute_load_7d ...}
+
 ### How the committed data was made (rebuild only if you want to change it)
 
 AG's rowing workbook holds ~50 athletes. To show the SAME system surfacing a
