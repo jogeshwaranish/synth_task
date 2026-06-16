@@ -378,6 +378,16 @@ def _sync_rowing(path: Path, s: Settings, conn, key: bytes) -> int:
     return db.upsert_activities(conn, acts, key=key)
 
 
+def sync_rowing_roster(path: Path, s: Settings, conn) -> int:
+    """Ingest every roster athlete from a pivoted rowing workbook."""
+    key = crypto.load_or_create_key(s.encryption_key_path)
+    tabs = _tabs_preview(path)
+    acts = rowing.ingest_rowing_roster(
+        tabs, lambda tab: _rows_from_xlsx(path, tab), settings=s, key=key,
+    )
+    return db.upsert_activities(conn, acts, key=key)
+
+
 def sync_sheet(s: Settings, conn) -> int:
     """Ingest the configured sheet export into the store. Returns activity count.
 

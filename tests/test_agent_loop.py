@@ -34,7 +34,10 @@ class FakeClient:
         class _Messages:
             def create(self, **kwargs):
                 outer.calls.append(kwargs)
-                return outer._scripted.pop(0)
+                item = outer._scripted.pop(0)
+                if isinstance(item, Exception):
+                    raise item
+                return item
 
         self.messages = _Messages()
 
@@ -108,6 +111,34 @@ def test_run_synthesis_happy_path_builds_report_and_evidence(tmp_path):
     assert "query_anomalies" in report.evidence[0].result_digest
     assert report.data_coverage["n_activities"] == 1
     # Second model call carried the tool result back.
+    assert len(client.calls) == 2
+    assert "NEXT_7_DAYS" in client.calls[0]["system"]
+    assert "DATA_CONFIDENCE" in client.calls[0]["system"]
+
+
+def test_run_synthesis_retries_transient_model_overload(tmp_path, monkeypatch):
+    from synthesize import agent
+
+    class OverloadedOnce(Exception):
+        status_code = 529
+
+    monkeypatch.setattr(agent.time, "sleep", lambda _seconds: None)
+    s = _settings(tmp_path)
+    conn = db.connect(s.synth_db_path)
+    db.init_db(conn)
+    key = crypto.load_or_create_key(s.encryption_key_path)
+    _seed(conn, key)
+    client = FakeClient([
+        OverloadedOnce("provider overloaded"),
+        SimpleNamespace(stop_reason="end_turn", content=[_text(_report_json())]),
+    ])
+
+    report = run_synthesis(
+        conn, s, "ag", date(2026, 6, 1), date(2026, 6, 7),
+        key=key, client=client,
+    )
+
+    assert report.athlete_id == "ag"
     assert len(client.calls) == 2
 
 

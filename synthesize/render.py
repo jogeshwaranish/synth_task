@@ -58,6 +58,31 @@ def _render_evidence_step(e: Evidence) -> str:
     return f"{e.step}. `{e.tool}`({args}) → {e.result_digest}"
 
 
+def _parse_summary(summary: str) -> tuple[str, list[str], str | None]:
+    read = ""
+    actions: list[str] = []
+    confidence = None
+    mode = ""
+    for raw in summary.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        lower = line.lower()
+        if lower.startswith("read:"):
+            read = line.split(":", 1)[1].strip()
+            mode = ""
+        elif lower.startswith("next_7_days:"):
+            mode = "actions"
+        elif lower.startswith("data_confidence:"):
+            confidence = line.split(":", 1)[1].strip()
+            mode = ""
+        elif mode == "actions" and line.startswith(("-", "*")):
+            actions.append(line[1:].strip())
+        elif not read:
+            read = line
+    return read or summary.strip(), actions[:3], confidence
+
+
 def render_markdown(report: SynthesisReport) -> str:
     cov = report.data_coverage or {}
     coverage = (
@@ -65,17 +90,27 @@ def render_markdown(report: SynthesisReport) -> str:
         f"{cov.get('n_wellness_days', '?')} wellness days · "
         f"{cov.get('n_days', '?')} days covered"
     )
+    read, actions, confidence = _parse_summary(report.summary)
     lines: list[str] = [
         f"# Training Insights — {report.athlete_id}",
         f"*{report.period_start.isoformat()} → {report.period_end.isoformat()} · "
         f"{coverage}*",
         f"*Generated {report.generated_at:%Y-%m-%d %H:%M UTC}*",
         "",
-        "## The big picture",
+        "## Coach read",
         "",
-        report.summary,
+        read,
         "",
-        "## What stands out",
+    ]
+    if actions:
+        lines += ["## Next 7 days", ""]
+        lines += [f"- {a}" for a in actions]
+        lines += [""]
+    if confidence:
+        lines += ["## Data confidence", "", confidence, ""]
+
+    lines += [
+        "## Training calls",
         "",
     ]
     if report.patterns:

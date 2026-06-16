@@ -31,7 +31,7 @@ def _report() -> SynthesisReport:
 def test_render_has_sections_and_humanises():
     md = render_markdown(_report())
     assert "# Training Insights — banks_claire" in md
-    assert "## The big picture" in md
+    assert "## Coach read" in md
     assert "Claire is under-recovered" in md
     assert "### 1. Fatigue is stacking up" in md
     # takeaway and evidence are split apart
@@ -44,6 +44,26 @@ def test_render_has_sections_and_humanises():
     assert "reviewed **1**" in md
     assert "`query_anomalies`" in md
     assert "`acwr`" in md
+
+
+def test_render_parses_compact_coach_summary():
+    r = _report()
+    r.summary = (
+        "READ: Hold the athlete steady; recovery is not matching the work.\n"
+        "NEXT_7_DAYS:\n"
+        "- Keep volume flat for four days.\n"
+        "- Add one full recovery day before the next hard piece.\n"
+        "DATA_CONFIDENCE: Strong training signal, limited subjective context."
+    )
+
+    md = render_markdown(r)
+
+    assert "## Coach read" in md
+    assert "Hold the athlete steady" in md
+    assert "## Next 7 days" in md
+    assert "- Keep volume flat for four days." in md
+    assert "## Data confidence" in md
+    assert "limited subjective context" in md
 
 
 def test_render_handles_no_patterns():

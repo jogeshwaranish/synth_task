@@ -221,6 +221,28 @@ def _canonical_mapping(tabs_preview: dict[str, TabPreview]) -> WellnessMapping |
                 source_tab=tab,
                 columns={t: t for t in WELLNESS_TARGETS if t in headers},
             )
+    aliases = {
+        "local_date": ["date"],
+        "in_bed_hours": ["in_bed"],
+        "asleep_hours": ["asleep"],
+        "snoring": ["snoring"],
+        "rhr": ["rhr"],
+        "hrv": ["hrv"],
+        "body_weight_lb": ["body_weight_lb"],
+        "sauna_mins": ["sauna_mins"],
+        "notes": ["notes", "other_notes"],
+    }
+    for tab, prev in tabs_preview.items():
+        by_lower = {h.strip().lower(): h for h in prev.headers}
+        cols: dict[str, str] = {}
+        for target, names in aliases.items():
+            for name in names:
+                if name in by_lower:
+                    cols[target] = by_lower[name]
+                    break
+        wellness_fields = set(cols) - {"local_date"}
+        if "local_date" in cols and wellness_fields:
+            return WellnessMapping(source_tab=tab, columns=cols)
     return None
 
 

@@ -135,6 +135,43 @@ def test_infer_mapping_uses_stub_llm():
     assert m.name_candidates == ("NAME",)
 
 
+def test_ingest_rowing_known_ag_shape_skips_llm(tmp_path):
+    pv = _full_preview()
+
+    def boom(_prompt):
+        raise AssertionError("known AG rowing workbook shape should not call the LLM")
+
+    acts = rowing.ingest_rowing(
+        pv, lambda tab: SESSION_ROWS[tab],
+        settings=type("S", (), {"synth_token_dir": tmp_path})(), key=b"k" * 32,
+        athlete_query="Banks, Claire", athlete_id="banks_claire", llm=boom,
+    )
+
+    assert {a.local_date for a in acts} == {date(2025, 9, 8), date(2026, 3, 16)}
+    assert all(a.athlete_id == "banks_claire" for a in acts)
+    assert not (tmp_path / "rowing_mapping.enc").exists()
+
+
+def test_ingest_rowing_roster_maps_every_available_athlete(tmp_path):
+    pv = _full_preview()
+
+    def boom(_prompt):
+        raise AssertionError("known AG rowing workbook shape should not call the LLM")
+
+    acts = rowing.ingest_rowing_roster(
+        pv, lambda tab: SESSION_ROWS[tab],
+        settings=type("S", (), {"synth_token_dir": tmp_path})(), key=b"k" * 32,
+        llm=boom,
+    )
+
+    assert {a.athlete_id for a in acts} == {
+        "banks-claire", "cox-madeline", "wheeler-ella",
+    }
+    assert {a.local_date for a in acts if a.athlete_id == "banks-claire"} == {
+        date(2025, 9, 8), date(2026, 3, 16),
+    }
+
+
 # --- end-to-end extraction for one athlete ----------------------------------
 
 SESSION_ROWS = {

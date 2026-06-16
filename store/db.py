@@ -433,6 +433,104 @@ def athlete_spans(conn: sqlite3.Connection) -> list[dict[str, str | int]]:
     return [dict(r) for r in cur.fetchall()]
 
 
+def _risk_level(flag_count: int, watch_count: int, latest: dict) -> str:
+    acwr = latest.get("acwr")
+    load_z = latest.get("load_zscore_28d")
+    if flag_count or (acwr is not None and acwr > 1.5) or (
+        load_z is not None and load_z > 3
+    ):
+        return "flag"
+    if watch_count or (acwr is not None and (acwr < 0.8 or acwr > 1.3)):
+        return "watch"
+    return "steady"
+
+
+def squad_overview(conn: sqlite3.Connection) -> list[dict]:
+    """Deterministic, LLM-free athlete triage rows for the browser overview."""
+    spans = {r["athlete_id"]: dict(r) for r in athlete_spans(conn)}
+    if not spans:
+        return []
+
+    activity_counts = {
+        r["athlete_id"]: r["n_activities"]
+        for r in conn.execute(
+            "SELECT athlete_id, COUNT(*) AS n_activities "
+            "FROM activity GROUP BY athlete_id"
+        )
+    }
+    wellness_counts = {
+        r["athlete_id"]: r["n_wellness_days"]
+        for r in conn.execute(
+            "SELECT athlete_id, COUNT(*) AS n_wellness_days "
+            "FROM wellness GROUP BY athlete_id"
+        )
+    }
+    latest_rows = {
+        r["athlete_id"]: dict(r)
+        for r in conn.execute(
+            "SELECT dm.* FROM daily_metrics dm "
+            "JOIN (SELECT athlete_id, MAX(local_date) AS max_date "
+            "      FROM daily_metrics GROUP BY athlete_id) latest "
+            "ON dm.athlete_id = latest.athlete_id "
+            "AND dm.local_date = latest.max_date"
+        )
+    }
+
+    anomaly_counts: dict[str, dict[str, int]] = {
+        athlete_id: {"watch": 0, "flag": 0} for athlete_id in spans
+    }
+    for a in get_anomalies(conn):
+        athlete_id = a.anomaly_id.split(":", 1)[0]
+        if athlete_id in anomaly_counts and a.severity.value in ("watch", "flag"):
+            anomaly_counts[athlete_id][a.severity.value] += 1
+
+    out = []
+    for athlete_id, span in spans.items():
+        latest = latest_rows.get(athlete_id, {})
+        counts = anomaly_counts[athlete_id]
+        flag_count = counts["flag"]
+        watch_count = counts["watch"]
+        risk_level = _risk_level(flag_count, watch_count, latest)
+        risk_score = flag_count * 100 + watch_count * 10
+        if latest.get("acwr") is not None:
+            risk_score += abs(float(latest["acwr"]) - 1.0)
+        out.append({
+            **span,
+            "n_activities": activity_counts.get(athlete_id, 0),
+            "n_wellness_days": wellness_counts.get(athlete_id, 0),
+            "watch_count": watch_count,
+            "flag_count": flag_count,
+            "risk_level": risk_level,
+            "risk_score": round(risk_score, 3),
+            "latest": {
+                "local_date": latest.get("local_date"),
+                "acute_load_7d": latest.get("acute_load_7d"),
+                "chronic_load_28d": latest.get("chronic_load_28d"),
+                "acwr": latest.get("acwr"),
+                "load_zscore_28d": latest.get("load_zscore_28d"),
+                "pace_trend_pct_14d": latest.get("pace_trend_pct_14d"),
+                "hr_at_pace_trend_pct_14d": latest.get(
+                    "hr_at_pace_trend_pct_14d"
+                ),
+            },
+        })
+    return sorted(out, key=lambda r: (-r["risk_score"], r["athlete_id"]))
+
+
+def athlete_series(conn: sqlite3.Connection, athlete_id: str) -> dict:
+    """Metrics and anomalies for one athlete, shaped for lightweight charts."""
+    metrics = get_metrics(conn, athlete_id)
+    anomalies = [
+        a for a in get_anomalies(conn)
+        if a.anomaly_id.startswith(f"{athlete_id}:")
+    ]
+    return {
+        "athlete_id": athlete_id,
+        "metrics": [m.model_dump(mode="json") for m in metrics],
+        "anomalies": [a.model_dump(mode="json") for a in anomalies],
+    }
+
+
 def upsert_anomalies(conn: sqlite3.Connection, anomalies: list[Anomaly]) -> int:
     cols = ", ".join(ANOMALY_COLUMNS)
     placeholders = ", ".join("?" for _ in ANOMALY_COLUMNS)

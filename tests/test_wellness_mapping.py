@@ -52,6 +52,27 @@ _ROWS = [
      "run_miles": "0"},
 ]
 
+_LLM_TABS = {
+    "recovery": TabPreview(
+        headers=["day", "bed", "sleep", "resting", "variability", "comments"],
+        samples=[{"day": "2025-12-25", "bed": "7.5", "sleep": "6.8",
+                  "resting": "48", "variability": "95", "comments": "felt good"}],
+    )
+}
+
+_LLM_MAPPING_JSON = json.dumps({
+    "source_tab": "recovery",
+    "columns": {
+        "local_date": "day", "in_bed_hours": "bed", "asleep_hours": "sleep",
+        "rhr": "resting", "hrv": "variability", "notes": "comments",
+    },
+})
+
+_LLM_ROWS = [
+    {"day": "2025-12-25", "bed": "7.5", "sleep": "6.8",
+     "resting": "48", "variability": "95", "comments": "felt good"},
+]
+
 
 def _available():
     return {t: p.headers for t, p in _TABS.items()}
@@ -146,17 +167,38 @@ def test_ingest_infers_once_then_serves_from_cache(tmp_path):
 
     def llm(prompt):
         calls.append(prompt)
-        return _GOOD_MAPPING_JSON
+        return _LLM_MAPPING_JSON
 
-    days = ingest_wellness(_TABS, lambda _tab: _ROWS, settings=settings, key=key, llm=llm)
-    assert len(days) == 2
+    days = ingest_wellness(_LLM_TABS, lambda _tab: _LLM_ROWS, settings=settings, key=key, llm=llm)
+    assert len(days) == 1
     assert len(calls) == 1                       # inferred once
     assert (tmp_path / "wellness_mapping.enc").exists()
 
     # Same sheet shape -> served from the encrypted cache, no second LLM call.
-    again = ingest_wellness(_TABS, lambda _tab: _ROWS, settings=settings, key=key, llm=llm)
-    assert len(again) == 2
+    again = ingest_wellness(_LLM_TABS, lambda _tab: _LLM_ROWS, settings=settings, key=key, llm=llm)
+    assert len(again) == 1
     assert len(calls) == 1
+
+
+def test_ag_daily_summary_columns_skip_the_llm(tmp_path):
+    key = crypto.load_or_create_key(tmp_path / "k.key")
+    settings = SimpleNamespace(synth_token_dir=tmp_path)
+
+    def boom(_prompt):
+        raise AssertionError("AG daily_summary columns must not call the LLM")
+
+    days = ingest_wellness(_TABS, lambda _tab: _ROWS, settings=settings, key=key, llm=boom)
+
+    assert len(days) == 2
+    assert str(days[0].local_date) == "2025-12-25"
+    assert days[0].in_bed_hours == 7.5
+    assert days[0].asleep_hours == 6.8
+    assert days[0].rhr == 48.0
+    assert days[0].hrv == 95.0
+    assert days[0].body_weight_lb == 160.0
+    assert days[0].sauna_mins == 20.0
+    assert days[0].notes == "felt good"
+    assert not (tmp_path / "wellness_mapping.enc").exists()
 
 
 def test_canonical_columns_skip_the_llm(tmp_path):
@@ -182,14 +224,14 @@ def test_cache_is_invalidated_when_headers_change(tmp_path):
 
     def llm(prompt):
         calls.append(prompt)
-        return _GOOD_MAPPING_JSON
+        return _LLM_MAPPING_JSON
 
-    ingest_wellness(_TABS, lambda _tab: _ROWS, settings=settings, key=key, llm=llm)
+    ingest_wellness(_LLM_TABS, lambda _tab: _LLM_ROWS, settings=settings, key=key, llm=llm)
     # A different sheet shape (extra column) must re-infer, not reuse the cache.
-    shifted = dict(_TABS)
-    shifted["daily_summary"] = TabPreview(
-        headers=_TABS["daily_summary"].headers + ["new_col"],
-        samples=_TABS["daily_summary"].samples,
+    shifted = dict(_LLM_TABS)
+    shifted["recovery"] = TabPreview(
+        headers=_LLM_TABS["recovery"].headers + ["new_col"],
+        samples=_LLM_TABS["recovery"].samples,
     )
-    ingest_wellness(shifted, lambda _tab: _ROWS, settings=settings, key=key, llm=llm)
+    ingest_wellness(shifted, lambda _tab: _LLM_ROWS, settings=settings, key=key, llm=llm)
     assert len(calls) == 2

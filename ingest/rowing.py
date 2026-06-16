@@ -282,6 +282,58 @@ def infer_mapping(
     return validate_mapping(_extract_json(llm(_build_prompt(tabs_preview))), tabs_preview)
 
 
+def _norm_header(h: str) -> str:
+    return re.sub(r"\s+", " ", h.strip().lower())
+
+
+def _known_ag_mapping(tabs_preview: dict[str, TabPreview]) -> RowingMapping | None:
+    """Deterministic config for AG's current women's rowing workbook shape.
+
+    Keep the LLM fallback for unfamiliar pivoted workbooks, but don't spend an
+    API call when the roster/session headers are already the stable AG pattern.
+    """
+    roster_tab = None
+    for tab, prev in tabs_preview.items():
+        headers = {_norm_header(h): h for h in prev.headers}
+        if "last name" in headers and "first name" in headers:
+            roster_tab = tab
+            roster_last = headers["last name"]
+            roster_first = headers["first name"]
+            break
+    if roster_tab is None:
+        return None
+
+    session_headers: list[str] = []
+    for tab, prev in tabs_preview.items():
+        if tab != roster_tab:
+            session_headers.extend(prev.headers)
+    by_norm: dict[str, list[str]] = {}
+    for h in session_headers:
+        by_norm.setdefault(_norm_header(h), []).append(h)
+
+    def candidates(*names: str) -> tuple[str, ...]:
+        out: list[str] = []
+        for name in names:
+            for h in by_norm.get(name, []):
+                if h not in out:
+                    out.append(h)
+        return tuple(out)
+
+    name_candidates = candidates("name")
+    split_candidates = candidates("avg split", "average", "split")
+    if not name_candidates or not split_candidates:
+        return None
+    return RowingMapping(
+        roster_tab=roster_tab,
+        roster_last_col=roster_last,
+        roster_first_col=roster_first,
+        name_candidates=name_candidates,
+        split_candidates=split_candidates,
+        rate_candidates=candidates("avg rate", "rate"),
+        watts_candidates=candidates("avg watts", "average watts"),
+    )
+
+
 # --- deterministic apply: one athlete -> Activities -------------------------
 
 def _pick(row: dict, candidates: tuple[str, ...]) -> object:
@@ -436,14 +488,7 @@ def ingest_rowing(
 ) -> list[Activity]:
     """Resolve (cache or infer) the workbook config, isolate `athlete_query`,
     and return that athlete's erg sessions as Activities."""
-    fingerprint = _fingerprint(tabs_preview)
-    cache_path = Path(settings.synth_token_dir) / "rowing_mapping.enc"
-    mapping = _load_cache(cache_path, key, fingerprint)
-    if mapping is None:
-        mapping = infer_mapping(tabs_preview, llm=llm or _default_llm(settings))
-        _save_cache(cache_path, key, fingerprint, mapping)
-        logger.info("inferred rowing mapping: roster=%r name=%s split=%s",
-                    mapping.roster_tab, mapping.name_candidates, mapping.split_candidates)
+    mapping = _resolve_mapping(tabs_preview, settings=settings, key=key, llm=llm)
     roster = RowingRoster.from_rows(
         read_rows(mapping.roster_tab), mapping.roster_last_col, mapping.roster_first_col)
     chosen = roster.resolve(athlete_query)
@@ -453,4 +498,43 @@ def ingest_rowing(
                               chosen_id=chosen, athlete_id=athlete_id)
     if not acts:
         raise RowingIngestError(f"no erg sessions found for {athlete_query!r}")
+    return acts
+
+
+def _resolve_mapping(
+    tabs_preview: dict[str, TabPreview],
+    *,
+    settings,
+    key: bytes,
+    llm: Callable[[str], str] | None = None,
+) -> RowingMapping:
+    fingerprint = _fingerprint(tabs_preview)
+    cache_path = Path(settings.synth_token_dir) / "rowing_mapping.enc"
+    mapping = _known_ag_mapping(tabs_preview) or _load_cache(cache_path, key, fingerprint)
+    if mapping is None:
+        mapping = infer_mapping(tabs_preview, llm=llm or _default_llm(settings))
+        _save_cache(cache_path, key, fingerprint, mapping)
+        logger.info("inferred rowing mapping: roster=%r name=%s split=%s",
+                    mapping.roster_tab, mapping.name_candidates, mapping.split_candidates)
+    return mapping
+
+
+def ingest_rowing_roster(
+    tabs_preview: dict[str, TabPreview],
+    read_rows: Callable[[str], list[dict]],
+    *,
+    settings,
+    key: bytes,
+    llm: Callable[[str], str] | None = None,
+) -> list[Activity]:
+    """Map every roster athlete found in a pivoted rowing workbook."""
+    mapping = _resolve_mapping(tabs_preview, settings=settings, key=key, llm=llm)
+    roster = RowingRoster.from_rows(
+        read_rows(mapping.roster_tab), mapping.roster_last_col, mapping.roster_first_col)
+    acts: list[Activity] = []
+    for athlete_id in roster.all_athletes():
+        acts.extend(extract_activities(tabs_preview, read_rows, mapping, roster,
+                                       chosen_id=athlete_id, athlete_id=athlete_id))
+    if not acts:
+        raise RowingIngestError("no erg sessions found for roster athletes")
     return acts

@@ -6,6 +6,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -112,6 +113,19 @@ def test_insights_rejected_output_is_502(tmp_path, monkeypatch):
     assert r.json()["detail"] == "model output failed validation"
 
 
+def test_insights_provider_failure_is_502(tmp_path, monkeypatch):
+    s = _settings(tmp_path)
+    monkeypatch.setattr(app_module, "get_settings", lambda: s)
+
+    def boom(conn, settings, *, athlete=None, start=None, end=None):
+        raise RuntimeError("provider overloaded")
+
+    monkeypatch.setattr(app_module, "generate_report", boom)
+    r = TestClient(app_module.app).get("/insights")
+    assert r.status_code == 502
+    assert r.json()["detail"] == "report generation provider unavailable; retry shortly"
+
+
 # --- Web frontend ---------------------------------------------------------
 
 def _canned(athlete: str = "cox-madeline") -> SynthesisReport:
@@ -152,7 +166,7 @@ _NODE = shutil.which("node")
 _INLINE_JS = re.findall(r"<script>(.*?)</script>", web_module.INDEX_HTML, re.S)[-1]
 _HARNESS = (
     "const bodyEl = { _html:'', set innerHTML(v){this._html=v;},"
-    " get innerHTML(){return this._html;}, classList:{toggle(){}},"
+    " get innerHTML(){return this._html;}, classList:{toggle(){},add(){},remove(){}},"
     " addEventListener(){}, value:'', textContent:'', appendChild(){}, min:'', max:'' };\n"
     "global.document = { getElementById: () => bodyEl };\n"
     "global.marked = { parse: (s) => '<p>'+s+'</p>' };\n"
@@ -239,6 +253,43 @@ def test_status_badge_omitted_when_underivable():
     assert "System read" not in html
 
 
+def test_report_visualizes_coach_read_and_next_steps():
+    report = _report(
+        summary=(
+            "READ: Keep the athlete steady this week.\n"
+            "NEXT_7_DAYS:\n"
+            "- Cap hard work at one session.\n"
+            "- Protect sleep before the next test.\n"
+            "DATA_CONFIDENCE: Training signal is strong; wellness is missing."
+        ),
+        data_coverage={"n_activities": 12, "n_days": 14, "n_wellness_days": 0},
+    )
+    html = _render_report_html(report)
+    assert "coach-panel" in html
+    assert "Coach read" in html
+    assert "Keep the athlete steady" in html
+    assert "Next 7 days" in html
+    assert "Cap hard work at one session" in html
+    assert "no wellness rows" in html
+
+
+def test_index_exposes_overview_and_chart_driven_detail():
+    body = TestClient(app_module.app).get("/").text
+    assert "Data Snapshot" in body
+    assert "/overview" in body
+    assert "/athlete-series" in body
+    assert "/sync-google-sheet" in body
+    assert "Connect Sheet" in body
+    assert "Sync + Analyze" in body
+    assert "Generate Insight Report" in body
+    assert "Querying metrics and anomalies" in body
+    assert 'id="sheet-url"' in body
+    assert 'id="sheet-athlete-query"' not in body
+    assert 'id="sync-summary"' in body
+    assert 'id="load-chart"' in body
+    assert "Report generation uses the Anthropic API" in body
+
+
 def test_insights_includes_briefing_markdown(tmp_path, monkeypatch):
     s = _settings(tmp_path)
     monkeypatch.setattr(app_module, "get_settings", lambda: s)
@@ -289,7 +340,7 @@ def test_insights_rate_limited_returns_429(tmp_path, monkeypatch):
 
 # --- Datasets -------------------------------------------------------------
 
-from schemas import DailyMetrics
+from schemas import Anomaly, AnomalySeverity, DailyMetrics
 from store import db as store_db
 
 
@@ -344,3 +395,165 @@ def test_insights_routes_to_selected_dataset(tmp_path, monkeypatch):
     assert r.status_code == 200
     assert r.json()["athlete_id"] == "triathlon"
     assert seen["athlete"] == "triathlon"
+
+
+def test_sync_google_sheet_downloads_sheet_into_selected_dataset(tmp_path, monkeypatch):
+    s = _settings(tmp_path, sheet_kind="tri", strava_athlete_id="triathlon")
+    monkeypatch.setattr(app_module, "get_settings", lambda: s)
+    downloaded_to = {}
+
+    def fake_download(sheet_url, destination):
+        downloaded_to["sheet_url"] = sheet_url
+        downloaded_to["destination"] = destination
+        Path(destination).parent.mkdir(parents=True, exist_ok=True)
+        Path(destination).write_bytes(b"PK\x03\x04fake")
+        return Path(destination)
+
+    def fake_sync(settings, conn):
+        assert settings.sheet_activities_path == downloaded_to["destination"]
+        assert settings.synth_db_path == app_module.DATASETS["triathlon"]
+        assert settings.sheet_kind == "tri"
+        assert settings.strava_athlete_id == "triathlon"
+        return 4
+
+    monkeypatch.setattr(app_module, "download_sheet_export", fake_download)
+    monkeypatch.setattr(app_module, "sync_sheet", fake_sync)
+    monkeypatch.setattr(app_module, "_analyze_conn", lambda conn, settings: {
+        "daily_rows": 3, "metrics": 3, "anomalies": 1,
+    })
+
+    r = TestClient(app_module.app).post("/sync-google-sheet", json={
+        "dataset": "triathlon",
+        "sheet_url": "https://docs.google.com/spreadsheets/d/1abc_DEF-234/edit",
+    })
+
+    assert r.status_code == 200
+    assert r.json() == {
+        "dataset": "triathlon",
+        "athlete_id": "triathlon",
+        "sheet": 4,
+        "analysis": {"daily_rows": 3, "metrics": 3, "anomalies": 1},
+        "total_activities": 0,
+    }
+    assert downloaded_to["sheet_url"].startswith("https://docs.google.com/")
+    assert downloaded_to["destination"].name == "triathlon_google_sheet.xlsx"
+
+
+def test_sync_google_sheet_ingests_rowing_roster(tmp_path, monkeypatch):
+    s = _settings(tmp_path)
+    monkeypatch.setattr(app_module, "get_settings", lambda: s)
+
+    def fake_download(sheet_url, destination):
+        Path(destination).parent.mkdir(parents=True, exist_ok=True)
+        Path(destination).write_bytes(b"PK\x03\x04fake")
+        return Path(destination)
+
+    captured = {}
+
+    def fake_sync(path, settings, conn):
+        captured.update(
+            path=path,
+            sheet_kind=settings.sheet_kind,
+            query=settings.sheet_athlete_query,
+            athlete_id=settings.strava_athlete_id,
+        )
+        return 44
+
+    monkeypatch.setattr(app_module, "download_sheet_export", fake_download)
+    monkeypatch.setattr(app_module, "sync_rowing_roster", fake_sync)
+    monkeypatch.setattr(app_module, "_analyze_conn", lambda conn, settings: {
+        "daily_rows": 190, "metrics": 190, "anomalies": 119,
+    })
+
+    r = TestClient(app_module.app).post("/sync-google-sheet", json={
+        "dataset": "rowing",
+        "sheet_url": "https://docs.google.com/spreadsheets/d/1dwuUatj_rbrztvRI86D-5rgZpc9enXgs/edit",
+    })
+
+    assert r.status_code == 200
+    assert r.json()["sheet"] == 44
+    assert r.json()["athlete_id"] is None
+    assert captured["path"].name == "rowing_google_sheet.xlsx"
+    assert captured["sheet_kind"] == "rowing"
+    assert captured["query"] is None
+
+
+def test_sync_google_sheet_unknown_dataset_is_404():
+    r = TestClient(app_module.app).post("/sync-google-sheet", json={
+        "dataset": "../secret",
+        "sheet_url": "https://docs.google.com/spreadsheets/d/1abc_DEF-234/edit",
+    })
+    assert r.status_code == 404
+
+
+def test_overview_ranks_athletes_by_deterministic_risk():
+    p = app_module.DATASETS["rowing"]
+    conn = store_db.connect(p)
+    store_db.init_db(conn)
+    store_db.upsert_metrics(conn, [
+        DailyMetrics(local_date=date(2026, 1, 1), athlete_id="steady",
+                     acute_load_7d=100, chronic_load_28d=100, acwr=1.0,
+                     rest_day=False),
+        DailyMetrics(local_date=date(2026, 1, 2), athlete_id="steady",
+                     acute_load_7d=95, chronic_load_28d=100, acwr=0.95,
+                     rest_day=False),
+        DailyMetrics(local_date=date(2026, 1, 1), athlete_id="risk",
+                     acute_load_7d=200, chronic_load_28d=100, acwr=2.0,
+                     load_zscore_28d=3.4, rest_day=False),
+    ])
+    store_db.upsert_anomalies(conn, [
+        Anomaly(anomaly_id="risk:2026-01-01:acwr",
+                local_date=date(2026, 1, 1), metric="acwr", value=2.0,
+                severity=AnomalySeverity.FLAG, description="High ACWR"),
+        Anomaly(anomaly_id="steady:2026-01-02:acwr",
+                local_date=date(2026, 1, 2), metric="acwr", value=0.95,
+                severity=AnomalySeverity.WATCH, description="Watch ACWR"),
+    ])
+
+    r = TestClient(app_module.app).get("/overview?dataset=rowing")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["dataset"] == "rowing"
+    assert [a["athlete_id"] for a in body["athletes"]] == ["risk", "steady"]
+    risk = body["athletes"][0]
+    assert risk["flag_count"] == 1
+    assert risk["watch_count"] == 0
+    assert risk["latest"]["acwr"] == 2.0
+    assert risk["risk_level"] == "flag"
+
+
+def test_athlete_series_returns_metrics_and_anomalies_for_charts():
+    p = app_module.DATASETS["rowing"]
+    conn = store_db.connect(p)
+    store_db.init_db(conn)
+    store_db.upsert_metrics(conn, [
+        DailyMetrics(local_date=date(2026, 1, 1), athlete_id="risk",
+                     acute_load_7d=140, chronic_load_28d=100, acwr=1.4,
+                     rest_day=False),
+        DailyMetrics(local_date=date(2026, 1, 2), athlete_id="risk",
+                     acute_load_7d=180, chronic_load_28d=100, acwr=1.8,
+                     pace_trend_pct_14d=8.0, rest_day=False),
+        DailyMetrics(local_date=date(2026, 1, 2), athlete_id="other",
+                     acute_load_7d=80, chronic_load_28d=100, acwr=0.8,
+                     rest_day=False),
+    ])
+    store_db.upsert_anomalies(conn, [
+        Anomaly(anomaly_id="risk:2026-01-02:acwr",
+                local_date=date(2026, 1, 2), metric="acwr", value=1.8,
+                severity=AnomalySeverity.FLAG, description="High ACWR"),
+        Anomaly(anomaly_id="other:2026-01-02:acwr",
+                local_date=date(2026, 1, 2), metric="acwr", value=0.8,
+                severity=AnomalySeverity.WATCH, description="Other athlete"),
+    ])
+
+    r = TestClient(app_module.app).get("/athlete-series?dataset=rowing&athlete=risk")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["athlete_id"] == "risk"
+    assert [m["local_date"] for m in body["metrics"]] == [
+        "2026-01-01", "2026-01-02",
+    ]
+    assert body["metrics"][1]["pace_trend_pct_14d"] == 8.0
+    assert [a["anomaly_id"] for a in body["anomalies"]] == [
+        "risk:2026-01-02:acwr",
+    ]
