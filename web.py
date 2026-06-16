@@ -172,6 +172,91 @@ INDEX_HTML = """<!doctype html>
     background: #fff; border: 1px solid var(--soft-gray);
     border-radius: 9px; padding: 1rem; overflow-x: auto; font-size: 0.85rem;
   }
+  /* --- Scannable report summary (built from the report JSON) --- */
+  .athlete-header {
+    display: flex; justify-content: space-between; align-items: flex-start;
+    gap: 1rem; margin-bottom: 0.9rem;
+  }
+  .athlete-header h1 { font-size: 1.55rem; margin: 0 0 0.25rem; }
+  .athlete-header .meta { color: var(--gray); font-size: 0.85rem; }
+  .athlete-header .gen {
+    color: var(--gray); font-size: 0.78rem; text-align: right; white-space: nowrap;
+  }
+  .status-badge {
+    display: inline-flex; align-items: center; gap: 0.6rem;
+    font-weight: 600; font-size: 1rem;
+    padding: 0.5rem 1rem; border-radius: 999px;
+  }
+  .status-badge .sys {
+    font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.07em;
+    font-weight: 600; opacity: 0.75;
+  }
+  .status-green { background: var(--green-soft); color: #0a7355; }
+  .status-golden { background: #FCF5E3; color: #7a5a12; border: 1px solid var(--golden-dark); }
+  .status-red { background: #FBE9E7; color: #B23A2E; border: 1px solid #E0A99F; }
+  .status-note { font-size: 0.78rem; color: var(--gray); margin: 0.4rem 0 1.5rem; }
+  .metric-strip { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-bottom: 1.75rem; }
+  .metric-tile {
+    flex: 1; min-width: 120px; background: var(--off-white);
+    border: 1px solid var(--soft-gray); border-radius: 11px; padding: 0.8rem 1rem;
+  }
+  .metric-tile .k {
+    font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--gray); margin-bottom: 0.3rem;
+  }
+  .metric-tile .v { font-size: 1.25rem; font-weight: 600; }
+  .metric-tile .v.green { color: var(--green); }
+  .metric-tile .v.golden { color: var(--golden-dark); }
+  .section-h {
+    font-size: 1.15rem; margin: 1.75rem 0 0.8rem;
+    padding-bottom: 0.35rem; border-bottom: 1px solid var(--soft-gray);
+  }
+  .insight-card {
+    border: 1px solid var(--soft-gray); border-radius: 12px;
+    padding: 1.05rem 1.25rem; margin-bottom: 0.9rem; background: #fff;
+  }
+  .insight-card .top {
+    display: flex; justify-content: space-between; gap: 1rem; align-items: baseline;
+  }
+  .insight-card .dates { color: var(--gray); font-size: 0.78rem; white-space: nowrap; }
+  .kind-pill {
+    display: inline-block; background: var(--green-soft); color: #0a7355;
+    font-size: 0.66rem; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.05em; padding: 0.13rem 0.5rem; border-radius: 999px;
+    margin-right: 0.4rem;
+  }
+  .insight-card h3 { margin: 0.55rem 0 0.2rem; font-size: 1.02rem; font-weight: 600; }
+  .insight-card details { margin-top: 0.5rem; }
+  .insight-card details > summary { color: var(--green); font-weight: 600; font-size: 0.85rem; }
+  .insight-card .detail-body { margin-top: 0.5rem; }
+  .insight-card .worth {
+    margin-top: 0.5rem; padding: 0.5rem 0.8rem; background: var(--green-soft);
+    border-left: 3px solid var(--green); border-radius: 0 8px 8px 0; font-size: 0.9rem;
+  }
+  .chips { margin-top: 0.7rem; display: flex; flex-wrap: wrap; gap: 0.35rem; }
+  .chip {
+    background: var(--soft-gray); color: var(--near-black); font-size: 0.72rem;
+    padding: 0.1rem 0.5rem; border-radius: 6px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  .questions-box {
+    background: var(--green-soft); border-radius: 12px;
+    padding: 1.05rem 1.4rem; margin: 1.5rem 0;
+  }
+  .questions-box .q-label {
+    font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.09em;
+    color: #0a7355; font-weight: 700; margin-bottom: 0.5rem;
+  }
+  .questions-box ol { margin: 0; padding-left: 1.2rem; }
+  .questions-box li { margin: 0.25rem 0; }
+  .evi-step { padding: 0.4rem 0; border-bottom: 1px solid var(--soft-gray); font-size: 0.85rem; }
+  .evi-step:last-child { border-bottom: none; }
+  .evi-step .n { color: var(--gray); margin-right: 0.4rem; }
+  .evi-step .tool { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .evi-more { display: inline; }
+  .evi-more > summary { color: var(--green); font-size: 0.82rem; display: inline; cursor: pointer; }
+  .full-briefing { margin-top: 1.75rem; }
+  .full-briefing > summary { font-weight: 600; color: var(--gray); }
   .hidden { display: none; }
 </style>
 </head>
@@ -264,50 +349,207 @@ INDEX_HTML = """<!doctype html>
     show("report");
   }
 
-  // PRIMARY path: the harness-rendered Markdown briefing.
-  // The briefing is built from LLM output (and, via prompt-injection, possibly
-  // from untrusted athlete data). marked does NOT sanitize, so any raw HTML in
-  // the markdown would otherwise execute via innerHTML — sanitize before insert.
-  function renderMarkdown(md) {
-    const clean = DOMPurify.sanitize(marked.parse(md));
-    $("report-body").innerHTML = '<div class="briefing">' + clean + "</div>";
-    show("report");
+  // ---- Report rendering ------------------------------------------------
+  // A scannable visual summary built from the validated report JSON, with the
+  // prose briefing tucked below. EVERY dynamic value goes through escapeHtml;
+  // only the briefing markdown is HTML, and it is DOMPurify-sanitized.
+
+  const KIND_LABEL = {
+    trend: "trend", anomaly_explanation: "explanation",
+    correlation: "connection", observation: "observation",
+  };
+
+  function fmt(x, d) {
+    return (x === null || x === undefined || isNaN(x)) ? null : Number(x).toFixed(d);
   }
 
-  // FALLBACK path: render the validated JSON sections cleanly.
-  function renderJson(report) {
-    const parts = [];
-    parts.push('<div class="briefing"><h1>Training Insights — ' +
-      escapeHtml(report.athlete_id) + "</h1></div>");
-    if (report.summary)
-      parts.push("<p>" + escapeHtml(report.summary) + "</p>");
-
-    (report.patterns || []).forEach((p) => {
-      const conf = (p.confidence || "medium").toLowerCase();
-      const cls = conf === "high" ? "high" : conf;
-      parts.push(
-        '<div class="insight"><h3>' + escapeHtml(p.title) + "</h3>" +
-        '<span class="badge ' + cls + '">' + escapeHtml(conf) +
-        " confidence</span><p>" + escapeHtml(p.description) + "</p></div>");
-    });
-
-    if ((report.open_questions || []).length) {
-      parts.push("<h2>Questions to follow up</h2><ul>");
-      report.open_questions.forEach((q) =>
-        parts.push("<li>" + escapeHtml(q) + "</li>"));
-      parts.push("</ul>");
+  // The contract does NOT carry metric values or anomaly severities into the
+  // report. The one place real numbers survive is a compare_periods evidence
+  // digest ("compare_periods -> {json}"); parse the latest one when present.
+  function latestComparePeriods(report) {
+    const steps = (report.evidence || []).filter((e) => e.tool === "compare_periods");
+    for (let i = steps.length - 1; i >= 0; i--) {
+      const d = steps[i].result_digest || "";
+      const at = d.indexOf("->");
+      if (at === -1) continue;
+      try { return JSON.parse(d.slice(at + 2).trim()); } catch (e) { /* truncated */ }
     }
+    return null;
+  }
 
-    const trail = (report.evidence || [])
-      .map((e) => e.step + ". " + e.tool +
-        "(" + Object.entries(e.args || {}).map(([k, v]) => k + "=" + v).join(", ") +
-        ") -> " + e.result_digest)
-      .join("\\n");
-    if (trail)
-      parts.push("<details><summary>How this was checked</summary>" +
-        '<pre class="trail">' + escapeHtml(trail) + "</pre></details>");
+  // "System read" — an explicitly-labelled heuristic over ONLY the hard signals
+  // the report actually carries. Returns null when nothing is derivable, so the
+  // badge (and its disclaimer) are omitted rather than guessing.
+  //
+  // Overreaching fires only on a real ACWR > 1.3 (parsed from the compare_periods
+  // digest) OR a flagged anomaly — NEVER inferred from insight/pattern text. The
+  // "severity == flag" branch is wired but inert: anomaly severities are not in
+  // the contract (anomalies_reviewed is ids only — "{athlete}:{date}:{metric}",
+  // no severity), so it can't be evaluated client-side.
+  // TODO(viz): pass anomaly severities through the contract to honour the
+  // "severity == flag" rule.
+  function deriveStatus(report) {
+    const cp = latestComparePeriods(report);
+    const acwr = cp && cp.period_a && typeof cp.period_a.mean_acwr === "number"
+      ? cp.period_a.mean_acwr : null;
+    const flagged = false;  // severities not in the report contract — see above
 
-    $("report-body").innerHTML = parts.join("");
+    if ((acwr !== null && acwr > 1.3) || flagged)
+      return { cls: "status-red", icon: "🔴", label: "Overreaching" };
+
+    // Plateau: explicit heuristic on insight confidence (an allowed badge input),
+    // reached only after Overreaching has been ruled out on hard signals.
+    const plateau = (report.patterns || []).some((p) =>
+      p.kind === "anomaly_explanation" && (p.confidence === "medium" || p.confidence === "high"));
+    if (plateau)
+      return { cls: "status-golden", icon: "⚠", label: "Plateau" };
+
+    if (acwr !== null && acwr >= 0.8 && acwr <= 1.3)
+      return { cls: "status-green", icon: "✓", label: "On Track" };
+
+    return null;  // no clear, supported signal -> omit the badge entirely
+  }
+
+  function buildHeader(report) {
+    const cov = report.data_coverage || {};
+    const gen = report.generated_at
+      ? String(report.generated_at).replace("T", " ").slice(0, 16) + " UTC" : "";
+    const coverage = (cov.n_activities ?? "?") + " activities · " +
+      (cov.n_wellness_days ?? "?") + " wellness days · " + (cov.n_days ?? "?") + " days";
+    return '<div class="athlete-header"><div>' +
+        "<h1>" + escapeHtml(report.athlete_id || "—") + "</h1>" +
+        '<div class="meta">' +
+          escapeHtml((report.period_start || "?") + " → " + (report.period_end || "?")) +
+          " · " + escapeHtml(coverage) +
+        "</div></div>" +
+        '<div class="gen">' + escapeHtml(gen) + "</div>" +
+      "</div>";
+  }
+
+  function buildStatus(report) {
+    const s = deriveStatus(report);
+    if (!s) return "";  // underivable -> no badge, no SYSTEM READ label, no disclaimer
+    return '<div class="status-badge ' + s.cls + '">' +
+        "<span>" + s.icon + " " + escapeHtml(s.label) + "</span>" +
+        '<span class="sys">System read</span>' +
+      "</div>" +
+      '<p class="status-note">Heuristic read of the report data — a glance, not a diagnosis.</p>';
+  }
+
+  function buildStrip(report) {
+    const cp = latestComparePeriods(report);
+    const a = (cp && cp.period_a) || {};
+    const dl = (cp && cp.deltas) || {};
+    const tiles = [];
+    // Only push a tile when the metric has a real value; absent/empty -> no tile.
+    const pushTile = (k, v, cls) => {
+      if (v === null || v === undefined || v === "") return;
+      tiles.push('<div class="metric-tile"><div class="k">' + escapeHtml(k) + "</div>" +
+        '<div class="v' + (cls ? " " + cls : "") + '">' + escapeHtml(v) + "</div></div>");
+    };
+
+    const load = fmt(a.mean_acute_load_7d, 0);
+    if (load !== null) {
+      const arrow = dl.mean_acute_load_7d == null ? ""
+        : (dl.mean_acute_load_7d > 0 ? " ↑" : (dl.mean_acute_load_7d < 0 ? " ↓" : ""));
+      pushTile("Acute load 7d", load + arrow, "green");
+    }
+    const acwr = fmt(a.mean_acwr, 2);
+    if (acwr !== null)
+      pushTile("ACWR", acwr, (a.mean_acwr >= 0.8 && a.mean_acwr <= 1.3) ? "green" : "golden");
+
+    // pace_trend_pct_14d / hr_at_pace_trend_pct_14d aren't carried in the report
+    // (get_daily_metrics digests are bare row counts) — omitted, never shown empty.
+    // TODO(viz): surface these (and an ACWR sparkline) if a metrics endpoint is added.
+
+    if (!tiles.length) return "";  // no real data -> no strip at all
+    return '<div class="metric-strip">' + tiles.join("") + "</div>";
+  }
+
+  // Patterns end their description with "EVIDENCE: ..."; split so the takeaway
+  // reads first (mirrors synthesize/render.py).
+  function splitEvidence(desc) {
+    const d = String(desc || "");
+    for (const m of ["EVIDENCE:", "Evidence:"]) {
+      const i = d.indexOf(m);
+      if (i !== -1) return [d.slice(0, i).trim(), d.slice(i + m.length).trim()];
+    }
+    return [d.trim(), null];
+  }
+
+  function buildInsights(report) {
+    const pats = report.patterns || [];
+    if (!pats.length)
+      return '<p class="status-note">No patterns surfaced for this period.</p>';
+    return pats.map((p) => {
+      const conf = (p.confidence || "medium").toLowerCase();
+      const confCls = conf === "high" ? "high" : conf;  // .badge high/medium/low
+      const kind = KIND_LABEL[p.kind] || p.kind || "observation";
+      const ev = splitEvidence(p.description);
+      const dates = (p.date_start || "") + " → " + (p.date_end || "");
+      let detail = "<p>" + escapeHtml(ev[0]) + "</p>";
+      if (ev[1])
+        detail += '<div class="worth"><strong>Evidence:</strong> ' + escapeHtml(ev[1]) + "</div>";
+      if (p.caveats)
+        detail += '<div class="worth"><strong>Worth noting:</strong> ' + escapeHtml(p.caveats) + "</div>";
+      const chips = (p.metrics_involved || [])
+        .map((m) => '<span class="chip">' + escapeHtml(m) + "</span>").join("");
+      return '<div class="insight-card">' +
+          '<div class="top"><div>' +
+            '<span class="kind-pill">' + escapeHtml(kind) + "</span>" +
+            '<span class="badge ' + confCls + '">' + escapeHtml(conf) + " confidence</span>" +
+          '</div><span class="dates">' + escapeHtml(dates) + "</span></div>" +
+          "<h3>" + escapeHtml(p.title || "") + "</h3>" +
+          "<details><summary>↓ Full detail</summary>" +
+            '<div class="detail-body">' + detail + "</div></details>" +
+          (chips ? '<div class="chips">' + chips + "</div>" : "") +
+        "</div>";
+    }).join("");
+  }
+
+  function buildQuestions(report) {
+    const qs = report.open_questions || [];
+    if (!qs.length) return "";
+    return '<div class="questions-box">' +
+      '<div class="q-label">Questions for the athlete</div><ol>' +
+      qs.map((q) => "<li>" + escapeHtml(q) + "</li>").join("") +
+      "</ol></div>";
+  }
+
+  function buildEvidence(report) {
+    const ev = report.evidence || [];
+    if (!ev.length) return "";
+    const steps = ev.map((e) => {
+      const args = Object.entries(e.args || {}).map(([k, v]) => k + "=" + v).join(", ");
+      const head = escapeHtml(e.tool || "") + (args ? "(" + escapeHtml(args) + ")" : "");
+      const digest = String(e.result_digest || "");
+      const body = digest.length > 120
+        ? '<details class="evi-more"><summary>' + escapeHtml(digest.slice(0, 120)) +
+          "…</summary>" + escapeHtml(digest) + "</details>"
+        : escapeHtml(digest);
+      return '<div class="evi-step"><span class="n">' + escapeHtml(String(e.step)) +
+        '.</span><span class="tool">' + head + "</span> → " + body + "</div>";
+    }).join("");
+    return "<details><summary>↓ How this was checked</summary>" + steps + "</details>";
+  }
+
+  function renderReport(report) {
+    let html =
+      buildHeader(report) +
+      buildStatus(report) +
+      buildStrip(report) +
+      '<h2 class="section-h">What stands out</h2>' +
+      buildInsights(report) +
+      buildQuestions(report) +
+      buildEvidence(report);
+    // Full prose briefing below the visual summary — LLM output, so sanitize.
+    const md = report.briefing_md;
+    if (typeof md === "string" && md.length) {
+      html += '<details class="full-briefing">' +
+        "<summary>↓ Full written briefing</summary>" +
+        '<div class="briefing">' + DOMPurify.sanitize(marked.parse(md)) + "</div></details>";
+    }
+    $("report-body").innerHTML = html;
     show("report");
   }
 
@@ -393,10 +635,7 @@ INDEX_HTML = """<!doctype html>
       const resp = await fetch("/insights?" + params.toString());
       if (!resp.ok) { renderError(messageFor(resp.status)); return; }
       const data = await resp.json();
-      if (typeof data.briefing_md === "string" && data.briefing_md.length)
-        renderMarkdown(data.briefing_md);
-      else
-        renderJson(data);
+      renderReport(data);
     } catch (e) {
       renderError(messageFor(0));
     }
