@@ -25,7 +25,7 @@ analyze → synthesize**.
 | `analyze/` | `metrics.py` (rolling load, ACWR, z-scores, pace/HR-at-pace trends + anomaly detectors), `rowing.py` (additive per-500m erg split-trend detector). |
 | `synthesize/` | The agent. `agent.py` (tool loop), `tools.py` (4 read-only DB tools), `prompts.py` (`wrap_untrusted` injection fence), `validate.py` (`validate_insight` — schema-checks LLM output, fail-closed), `report.py` (resolve target + drive agent), `render.py` (report → Markdown briefing). |
 | `security/` | `crypto.py` — AES-256-GCM + per-machine key (`.tokens/synth.key`, 0600). |
-| `cli.py` / `app.py` | `synth sync\|analyze\|report` CLI · FastAPI (`/health`, `/sync`, `/insights`). |
+| `cli.py` / `app.py` / `web.py` | `synth sync\|analyze\|report` CLI · FastAPI (`/`, `/health`, `/sync`, `/athletes`, `/insights`) · the single self-contained browser UI (`web.INDEX_HTML`). |
 | `scripts/` | Throwaway test harnesses (NOT shipped): `gen_test_strava.py`, `gen_rowing_test.py`, and the whole-roster `multi_athlete.py` + `gen_all_athletes.py`. |
 | `tests/` | `uv run pytest -q` — offline against fixtures, never the network. |
 | `*.md` | `CONTRACT.md` (interface), `DECISIONS.md` (one paragraph per tradeoff), `CLAUDE.md` (repo conventions). |
@@ -55,6 +55,38 @@ wrong on an unfamiliar workbook.
     uv run synth analyze    # compute metrics + anomalies
     uv run synth report     # run the synthesis agent -> readable briefing
     uv run synth report --format json   # same report as the machine deliverable
+
+## Web UI / serving
+
+`app.py` is a thin FastAPI surface over the same functions the CLI calls; `web.py`
+is a single self-contained HTML document (CSS + JS inlined) for non-technical
+coaches. Run it with uvicorn:
+
+    uv run uvicorn app:app --host 127.0.0.1 --port 8000   # then open http://127.0.0.1:8000
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /` | The browser coach UI. |
+| `GET /health` | Liveness + `contract_version`. |
+| `GET /athletes?dataset=` | Athlete ids + date spans for the picker (read-only, LLM-free, not rate-limited). |
+| `GET /insights?athlete=&start=&end=&dataset=` | Runs the agent; returns the validated `SynthesisReport` JSON **plus** `briefing_md`. Rate-limited (spends LLM tokens). |
+| `POST /sync` | Pulls Strava + the configured sheet into the real `synth.db`. |
+
+`dataset` is a NAME, never a path: `app.DATASETS` is a fixed `rowing|triathlon`
+allowlist resolved under the repo root (the boundary that stops a client steering
+the app at an arbitrary file — unknown/`../…` → 404). `/insights` is capped by a
+dependency-free in-process sliding window (10 req/60s per client IP, HTTP 429).
+
+**Security posture (web).** The rendered briefing is **sanitized** before it
+touches the DOM — `DOMPurify.sanitize(marked.parse(briefing_md))` — because
+`marked` does not sanitize and the briefing carries LLM output that prompt-
+injection through `UntrustedText` could shape; the JSON fallback escapes via
+`escapeHtml`. Both CDN scripts are SRI-pinned. The app has **no in-process auth**:
+it is meant to sit behind an authenticating proxy (e.g. Cloudflare Access), not be
+exposed raw. Two things still on the list for a public deploy: the per-IP limiter
+keys on `request.client.host`, which collapses to one shared bucket behind a
+proxy/tunnel (use the real client-IP header), and `POST /sync` is unauthenticated
+and unthrottled. See `# TODO(security)` seams in `app.py` and `DECISIONS.md`.
 
 ## Data sources
 
